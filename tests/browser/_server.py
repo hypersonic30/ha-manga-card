@@ -3,7 +3,7 @@
 Every test script starts with `from _server import *`. The fake keeps reading progress in memory and records every request
 (`calls()`), so tests can assert what the card sent to Komga. `reset()` restores the initial state.
 """
-import http.server, json, os, re, sys, threading, urllib.parse
+import http.server, json, os, re, sys, threading, time, urllib.parse
 from playwright.sync_api import sync_playwright
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +58,7 @@ def _mylar_issues(cid, statuses=None):
 
 def _fresh_mylar():
     return {
-        "off": False, "error": False,
+        "off": False, "error": False, "delay": {}, "fail": set(),
         "index": [{"id": "72459", "name": "Attack on Titan", "imageURL": "", "status": "Active", "publisher": "Carlsen Verlag",
                    "publishYear": "March 2014 - March 2022", "year": "2014", "totalIssues": 4}],
         "issues": {"72459": _mylar_issues("72459", {1: "Downloaded"})},
@@ -188,12 +188,16 @@ class H(http.server.SimpleHTTPRequestHandler):
         reads = {"findComic", "getIndex", "getComic", "getWanted", "getHistory"}
         writes = {"addComic", "queueIssue", "unqueueIssue", "forceSearch", "pauseComic", "resumeComic"}
         with State.lock:
-            M = State.mylar
             State.log.append({"method": method, "path": "mylar/" + cmd, "query": q, "body": None})
+        time.sleep(State.mylar["delay"].get(cmd, 0) / 1000)       # a slow Mylar (it works through 60 s indexer pauses)
+        with State.lock:
+            M = State.mylar
             if M["off"]:
                 return self._send(503, {"error": "Mylar is not configured"})
             if (method == "GET" and cmd not in reads) or (method == "POST" and cmd not in writes) or method not in ("GET", "POST"):
                 return self._send(403, {"error": f"{method} /{cmd} is not available through Home Assistant"})
+            if cmd in M["fail"]:
+                return self._send(200, {"success": False, "error": {"code": 500, "message": f"{cmd} schlug fehl"}})
             if M["error"]:
                 return self._send(200, {"success": False, "error": {"code": 500, "message": "Mylar kaputt"}})
             if cmd == "findComic":
@@ -263,6 +267,10 @@ class H(http.server.SimpleHTTPRequestHandler):
             part = self.path.split("/")[2:]
             if part[0] in ("off", "error"):
                 State.mylar[part[0]] = part[1] == "1"
+            elif part[0] == "delay":
+                State.mylar["delay"][part[1]] = int(part[2])
+            elif part[0] == "fail":
+                (State.mylar["fail"].add if part[2] == "1" else State.mylar["fail"].discard)(part[1])
             elif part[0] == "advance":
                 self._mylar_advance(part[1], part[2])
             return self._send(200, {"ok": True})

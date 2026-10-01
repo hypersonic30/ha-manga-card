@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.3.0";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -267,6 +267,22 @@ const STYLE = `
   .mc-res { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: var(--mc-radius-sm); background: var(--mc-soft); }
   .mc-res .mc-cover { flex: 0 0 52px; box-shadow: none; }
   .mc-res .mc-btn { min-height: 38px; padding: 0 14px; font-size: 0.85em; white-space: nowrap; }
+  .mc-item { display: flex; flex-direction: column; }
+  .mc-item .mc-res { cursor: default; }
+  .mc-item .mc-res[data-action] { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .mc-chev { flex: 0 0 auto; width: 28px; text-align: center; font-size: 1.5em; line-height: 1; color: var(--secondary-text-color); transition: transform 0.2s ease; }
+  .mc-item.open .mc-chev { transform: rotate(90deg); }
+  .mc-item.open .mc-res { border-bottom-left-radius: 0; border-bottom-right-radius: 0; background: color-mix(in srgb, var(--mc-accent) 14%, var(--mc-soft)); }
+  .mc-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--mc-soft); border-radius: 0 0 var(--mc-radius-sm) var(--mc-radius-sm);
+    border-top: 1px solid var(--mc-line); animation: mc-unfold 0.18s ease; }
+  @keyframes mc-unfold { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  .mc-panel .mc-pills { margin-top: 0; }
+  .mc-inline-vols { display: flex; flex-direction: column; gap: 2px; max-height: 52vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+  .mc-ivol { display: grid; grid-template-columns: 4.6em 1fr auto auto; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--mc-line); }
+  .mc-ivol:first-child { border-top: none; }
+  .mc-ivol-n { font-weight: 600; font-size: 0.9em; }
+  .mc-ivol-d { font-size: 0.74em; color: var(--secondary-text-color); }
+  .mc-ivol .mc-btn { min-height: 34px; padding: 0 12px; font-size: 0.82em; }
   .mc-status { font-size: 0.72em; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
     background: color-mix(in srgb, var(--primary-text-color) 12%, transparent); }
   .mc-status.wanted, .mc-status.snatched { background: color-mix(in srgb, var(--mc-accent) 35%, transparent); }
@@ -318,8 +334,9 @@ class MangaCard extends HTMLElement {
     this._findToken = 0;
     this._germanOnly = false;
     this._adding = new Set();
-    this._myId = null;
-    this._mySeries = null; // { comic, issues }
+    this._open = null; // Mylar series unfolded in the search tab
+    this._seriesCache = new Map(); // Mylar series id -> { comic, issues }
+    this._pending = new Set(); // issue ids whose change is still travelling to Mylar
     this._dl = { wanted: [], history: [], loaded: false };
     this._ppSeen = null; // Set of finished downloads Komga was told about
     this._queueing = false;
@@ -410,15 +427,10 @@ class MangaCard extends HTMLElement {
     this._overlay = document.createElement("div");
     this._overlay.className = "manga-card-overlay";
     this._overlayRoot = this._overlay.attachShadow({ mode: "open" });
-    this._overlayRoot.innerHTML = `${STYLE}<dialog class="mc-dialog" id="mc-detail"></dialog><dialog class="mc-dialog" id="mc-mylar"></dialog><dialog class="mc-dialog" id="mc-reader"></dialog>`;
+    this._overlayRoot.innerHTML = `${STYLE}<dialog class="mc-dialog" id="mc-detail"></dialog><dialog class="mc-dialog" id="mc-reader"></dialog>`;
     document.body.appendChild(this._overlay);
     this._detailDialog = this._overlayRoot.getElementById("mc-detail");
     this._readerDialog = this._overlayRoot.getElementById("mc-reader");
-    this._mylarDialog = this._overlayRoot.getElementById("mc-mylar");
-    this._mylarDialog.addEventListener("close", () => {
-      this._myId = null;
-      this._mySeries = null;
-    });
     this._detailDialog.addEventListener("close", () => {
       this._detailId = null;
       this._detail = null;
@@ -567,6 +579,13 @@ class MangaCard extends HTMLElement {
   _onInput_filter(el) {
     if (this._tab === "search") {
       this._findDraft = el.value; // ComicVine is slow and rate limited: search on Enter / the button, not while typing
+      if (!el.value.trim() && this._found !== null) { // emptied the field: back to "Deine Serien"
+        this._found = null;
+        this._findQuery = "";
+        this._findToken++; // a search still running must not bring its hits back
+        this._findBusy = false;
+        this._render();
+      }
       return;
     }
     this._filter = el.value.trim();
@@ -726,6 +745,9 @@ class MangaCard extends HTMLElement {
     if (this._tab === "downloads") {
       this._loadDownloads().catch((e) => this._setError(e, "Downloads"));
       this._startPoll();
+    } else if (this._tab === "search" && this._open) {
+      this._loadMylar(this._open).catch(() => {});
+      this._startPoll();
     }
     this._render();
   }
@@ -772,13 +794,14 @@ class MangaCard extends HTMLElement {
     if (this._findBusy) return `<div class="mc-loading">Suche bei ComicVine… (kann einen Moment dauern)</div>`;
     const mine = new Set(this._mylarIndex.map((s) => String(s.id)));
     if (this._found === null) {
-      const tiles = this._mylarIndex
-        .map((s) => `<div class="mc-tile" data-action="openMylar" data-id="${esc(s.id)}">${this._ext(s.imageURL, s.name)}
-          <div class="mc-tile-title">${esc(s.name)}</div>
-          <div class="mc-tile-sub">${s.status === "Loading" ? "Wird angelegt…" : `${s.totalIssues ?? "?"} Bände`}</div></div>`)
+      const rows = this._mylarIndex
+        .map((s) => this._itemRow({
+          id: String(s.id), name: s.name, cover: s.imageURL, mine: true,
+          sub: s.status === "Loading" ? "Wird angelegt…" : [s.publisher, s.year, `${s.totalIssues ?? "?"} Bände`].filter(Boolean).join(" · "),
+        }))
         .join("");
       return `<div class="mc-hint">Gib oben einen Titel ein und tippe auf „Suchen“. Du wählst dann die Ausgabe (Verlag, Jahr, Bandzahl) und lädst die Bände einzeln herunter.</div>
-        ${tiles ? `<div class="mc-section">Deine Serien</div><div class="mc-grid">${tiles}</div>` : ""}`;
+        ${rows ? `<div class="mc-section">Deine Serien</div><div class="mc-list">${rows}</div>` : ""}`;
     }
     const all = this._found;
     const german = all.filter((r) => GERMAN_PUBLISHERS.test(r.publisher || ""));
@@ -788,18 +811,27 @@ class MangaCard extends HTMLElement {
     if (!shown.length) {
       return `${chips}<div class="mc-empty">${all.length ? "Keine deutsche Ausgabe gefunden. Tippe auf „Alle“." : `Nichts gefunden für „${esc(this._findQuery)}“.`}</div>`;
     }
-    const rows = shown.map((r) => {
-      const id = String(r.comicid);
-      const has = mine.has(id);
-      const busy = this._adding.has(id);
-      const sub = [r.publisher, r.comicyear, `${r.issues} ${Number(r.issues) === 1 ? "Band" : "Bände"}`].filter(Boolean).join(" · ");
-      const act = has
-        ? `<span class="mc-status done">In Mylar</span>`
-        : `<button class="mc-btn" data-action="addSeries" data-id="${esc(id)}" ${busy ? "disabled" : ""}>${busy ? "…" : "Hinzufügen"}</button>`;
-      return `<div class="mc-res" ${has ? `data-action="openMylar" data-id="${esc(id)}"` : ""}>${this._ext(r.comicthumb || r.comicimage, r.name)}
-        <div class="mc-vol-main"><div class="mc-vol-title">${esc(r.name)}</div><div class="mc-vol-sub">${esc(sub)}</div></div>${act}</div>`;
-    });
+    const rows = shown.map((r) => this._itemRow({
+      id: String(r.comicid), name: r.name, cover: r.comicthumb || r.comicimage, mine: mine.has(String(r.comicid)), badge: true,
+      sub: [r.publisher, r.comicyear, `${r.issues} ${Number(r.issues) === 1 ? "Band" : "Bände"}`].filter(Boolean).join(" · "),
+    }));
     return `${chips}<div class="mc-list">${rows.join("")}</div>`;
+  }
+
+  /**
+   * One series in the search tab - a search hit or a series Mylar follows. Series Mylar knows unfold right below their row
+   * (no popup: you stay where you are, with the hits above and below); everything else offers "Hinzufügen".
+   */
+  _itemRow(r) {
+    const open = r.mine && this._open === r.id;
+    const busy = this._adding.has(r.id);
+    const right = r.mine
+      ? `${r.badge ? `<span class="mc-status done">In Mylar</span>` : ""}<span class="mc-chev">›</span>`
+      : `<button class="mc-btn" data-action="addSeries" data-id="${esc(r.id)}" ${busy ? "disabled" : ""}>${busy ? "Wird angelegt…" : "Hinzufügen"}</button>`;
+    return `<div class="mc-item ${open ? "open" : ""}" data-item="${esc(r.id)}">
+      <div class="mc-res" ${r.mine ? `data-action="toggleSeries" data-id="${esc(r.id)}" role="button" aria-expanded="${open}"` : ""}>${this._ext(r.cover, r.name)}
+        <div class="mc-vol-main"><div class="mc-vol-title">${esc(r.name)}</div><div class="mc-vol-sub">${esc(r.sub)}</div></div>${right}</div>
+      ${open ? `<div class="mc-panel" data-panel="${esc(r.id)}">${this._panelHtml(r.id)}</div>` : ""}</div>`;
   }
 
   async _onAction_addSeries(el) {
@@ -811,8 +843,11 @@ class MangaCard extends HTMLElement {
       await this._my("POST", "addComic", { id });
       this._mylarIndex = (await this._my("GET", "getIndex")).data || [];
       this._adding.delete(id);
+      this._open = id; // unfold it in place
       this._render();
-      await this._openMylar(id);
+      this._revealItem(id);
+      await this._loadMylar(id);
+      this._startPoll();
     } catch (err) {
       this._adding.delete(id);
       this._render();
@@ -820,104 +855,124 @@ class MangaCard extends HTMLElement {
     }
   }
 
-  // ── Mylar series: volumes and their download state ────────────────────
-
-  async _onAction_openMylar(el) {
-    await this._openMylar(el.dataset.id);
+  _revealItem(id) {
+    const item = [...this.shadowRoot.querySelectorAll("[data-item]")].find((n) => n.dataset.item === id);
+    item?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }
 
-  async _openMylar(id) {
-    this._myId = id;
-    this._mySeries = null;
-    this._renderMylar();
-    if (!this._mylarDialog.open) this._mylarDialog.showModal();
-    try {
-      await this._loadMylar(id);
-    } catch (err) {
-      this._mylarDialog.close();
+  // ── Mylar series: volumes and their download state (unfolded under the row) ─
+
+  _onAction_toggleSeries(el) {
+    const id = el.dataset.id;
+    this._open = this._open === id ? null : id;
+    this._render();
+    if (!this._open) return;
+    this._revealItem(id);
+    this._loadMylar(id).catch((err) => {
+      this._open = null;
+      this._render();
       this._setError(err, "Serie laden");
-      return;
-    }
+    });
     this._startPoll();
   }
 
   async _loadMylar(id) {
     const res = await this._my("GET", "getComic", { id });
-    if (this._myId !== id) return;
     const d = res.data || {};
-    this._mySeries = {
-      comic: (d.comic || [])[0] || null, // empty while Mylar is still fetching the series from ComicVine
-      issues: [...(d.issues || [])].sort((a, b) => volumeNumber(a.number) - volumeNumber(b.number)),
-    };
-    this._renderMylar();
+    const issues = [...(d.issues || [])].sort((a, b) => volumeNumber(a.number) - volumeNumber(b.number));
+    // A change that is still travelling to Mylar (optimistic) must not be undone by an older answer.
+    const old = this._seriesCache.get(id);
+    for (const i of issues) {
+      const mine = old?.issues.find((o) => String(o.id) === String(i.id));
+      if (mine && this._pending.has(String(i.id))) i.status = mine.status;
+    }
+    this._seriesCache.set(id, { comic: (d.comic || [])[0] || null, issues }); // comic is empty while Mylar still fetches it from ComicVine
+    this._updatePanel(id);
   }
 
-  _renderMylar() {
-    const close = `<button class="mc-btn secondary round mc-close" data-action="closeMylar" aria-label="Schließen">✕</button>`;
-    const d = this._mySeries;
-    if (!d || !d.comic) {
-      this._setIfChanged(this._mylarDialog, `<div class="mc-sheet">${close}<div class="mc-loading">${d ? "Serie wird angelegt…" : "Lädt…"}</div></div>`);
-      return;
-    }
+  _panelHtml(id) {
+    const d = this._seriesCache.get(id);
+    if (!d || !d.comic) return `<div class="mc-loading">${d ? "Serie wird angelegt…" : "Lädt…"}</div>`;
     const { comic, issues } = d;
     const count = (st) => issues.filter((i) => i.status === st).length;
-    const open = issues.filter((i) => i.status === "Skipped" || i.status === "Failed").length;
+    const todo = issues.filter((i) => i.status === "Skipped" || i.status === "Failed").length;
     const pills = [
-      comic.publisher ? `<span class="mc-pill">${esc(comic.publisher)}</span>` : "",
-      comic.publishYear ? `<span class="mc-pill">${esc(comic.publishYear)}</span>` : "",
       `<span class="mc-pill">${issues.length} Bände</span>`,
       count("Downloaded") ? `<span class="mc-pill ok">${count("Downloaded")} fertig</span>` : "",
+      count("Wanted") + count("Snatched") ? `<span class="mc-pill">${count("Wanted") + count("Snatched")} in Arbeit</span>` : "",
+      comic.publishYear ? `<span class="mc-pill">${esc(comic.publishYear)}</span>` : "",
     ].join("");
     const rows = issues.map((i) => {
       const st = i.status || "Skipped";
+      const busy = this._pending.has(String(i.id));
       const cls = st === "Downloaded" ? "done" : st === "Wanted" ? "wanted" : st === "Snatched" ? "snatched" : st === "Failed" ? "failed" : "";
       let act = "";
-      if (st === "Skipped" || st === "Failed") act = `<button class="mc-btn secondary" data-action="queueVolume" data-id="${esc(i.id)}">Laden</button>`;
-      else if (st === "Wanted") act = `<button class="mc-btn secondary" data-action="unqueueVolume" data-id="${esc(i.id)}">Abbrechen</button>`;
+      if (st === "Skipped" || st === "Failed") act = `<button class="mc-btn secondary" data-action="queueVolume" data-id="${esc(i.id)}" ${busy ? "disabled" : ""}>Laden</button>`;
+      else if (st === "Wanted") act = `<button class="mc-btn secondary" data-action="unqueueVolume" data-id="${esc(i.id)}" ${busy ? "disabled" : ""}>${busy ? "…" : "Abbrechen"}</button>`;
       const date = i.releaseDate && i.releaseDate !== "0000-00-00" ? i.releaseDate : i.issueDate && i.issueDate !== "0000-00-00" ? i.issueDate : "";
-      return `<div class="mc-vol" style="cursor:default"><div class="mc-vol-main"><div class="mc-vol-title">Band ${esc(i.number)}</div>
-        <div class="mc-vol-sub">${esc(date)}</div></div><span class="mc-status ${cls}">${esc(ISSUE_STATUS[st] || st)}</span>${act}</div>`;
+      return `<div class="mc-ivol"><span class="mc-ivol-n">Band ${esc(i.number)}</span><span class="mc-ivol-d">${esc(date)}</span>
+        <span class="mc-status ${cls}">${esc(ISSUE_STATUS[st] || st)}</span>${act}</div>`;
     });
-    this._setIfChanged(this._mylarDialog, `<div class="mc-sheet">${close}
-      <div class="mc-detail-top">${this._ext(comic.imageURL, comic.name)}
-        <div><div class="mc-detail-title">${esc(comic.name)}</div><div class="mc-pills">${pills}</div></div></div>
-      <div class="mc-actions">
-        <button class="mc-btn block" data-action="queueNext" ${open && !this._queueing ? "" : "disabled"}>${
-          this._queueing ? "Wird angestoßen…" : open ? `Nächste ${Math.min(open, BULK_VOLUMES)} Bände laden` : "Alles geladen oder in Arbeit"}</button>
-        <div class="mc-hint">Jeder Band löst eine Suche bei deinen Indexern aus (die haben Stundenlimits), darum immer nur ein paar auf einmal.</div>
-      </div>
-      <div class="mc-section" style="margin-bottom:8px">Bände</div>
-      <div class="mc-vols">${rows.join("") || `<div class="mc-empty">Mylar kennt noch keine Bände.</div>`}</div></div>`);
+    return `<div class="mc-pills">${pills}</div>
+      <button class="mc-btn block" data-action="queueNext" ${todo && !this._queueing ? "" : "disabled"}>${
+        this._queueing ? "Wird angestoßen…" : todo ? `Nächste ${Math.min(todo, BULK_VOLUMES)} Bände laden` : "Alles geladen oder in Arbeit"}</button>
+      <div class="mc-hint">Jeder Band löst eine Suche bei deinen Indexern aus (die haben Stundenlimits), darum immer nur ein paar auf einmal.</div>
+      <div class="mc-inline-vols">${rows.join("") || `<div class="mc-empty">Mylar kennt noch keine Bände.</div>`}</div>`;
   }
 
-  _onAction_closeMylar() {
-    this._mylarDialog.close();
+  /** Redraw only the unfolded panel: the list above it and the scroll position of the volume list stay put. */
+  _updatePanel(id) {
+    const el = [...this.shadowRoot.querySelectorAll("[data-panel]")].find((n) => n.dataset.panel === id);
+    if (!el) return;
+    const list = el.querySelector(".mc-inline-vols");
+    const top = list ? list.scrollTop : 0;
+    this._setIfChanged(el, this._panelHtml(id));
+    const body = this.shadowRoot.getElementById("mc-body");
+    if (body) body._html = null; // the DOM no longer matches the last full render
+    const again = el.querySelector(".mc-inline-vols");
+    if (again && top) again.scrollTop = top;
   }
 
-  _setIssueStatus(id, status) {
-    const issue = this._mySeries?.issues.find((i) => String(i.id) === String(id));
+  _setIssueStatus(id, status, sid = this._open) {
+    const issue = this._seriesCache.get(sid)?.issues.find((i) => String(i.id) === String(id));
     if (issue) issue.status = status;
   }
 
+  _issueStatus(id, sid = this._open) {
+    return this._seriesCache.get(sid)?.issues.find((i) => String(i.id) === String(id))?.status;
+  }
+
+  /** The screen reacts at once; Mylar can be slow while it works through its indexer pauses. A failure puts things back. */
   async _queue(ids) {
     if (this._queueing) return;
+    const sid = this._open;
     this._queueing = true;
-    this._renderMylar();
+    const before = new Map(ids.map((id) => [String(id), this._issueStatus(id, sid)]));
+    ids.forEach((id) => {
+      this._setIssueStatus(id, "Wanted", sid);
+      this._pending.add(String(id));
+    });
+    this._updatePanel(sid);
     const gap = this._config.queue_gap_ms ?? BULK_GAP_MS;
+    let sent = 0;
     try {
-      for (let n = 0; n < ids.length; n++) {
-        if (n) await sleep(gap); // spread the indexer searches out
-        await this._my("POST", "queueIssue", { id: ids[n] }); // answers at once, Mylar searches in the background
-        this._setIssueStatus(ids[n], "Wanted");
-        this._renderMylar();
+      for (; sent < ids.length; sent++) {
+        if (sent) await sleep(gap); // spread the indexer searches out
+        await this._my("POST", "queueIssue", { id: ids[sent] }); // answers at once, Mylar searches in the background
+        this._pending.delete(String(ids[sent]));
+        this._updatePanel(sid);
       }
     } catch (err) {
+      ids.slice(sent).forEach((id) => {
+        this._setIssueStatus(id, before.get(String(id)), sid);
+        this._pending.delete(String(id));
+      });
       this._setError(err, "Download");
     }
     this._queueing = false;
-    this._renderMylar();
-    this._startPoll();
+    this._updatePanel(sid);
     this._loadDownloads().catch(() => {}); // the downloads badge
+    this._startPoll();
     this._pollSoon();
   }
 
@@ -926,18 +981,26 @@ class MangaCard extends HTMLElement {
   }
 
   _onAction_queueNext() {
-    const ids = (this._mySeries?.issues || []).filter((i) => i.status === "Skipped" || i.status === "Failed").slice(0, BULK_VOLUMES).map((i) => i.id);
+    const ids = (this._seriesCache.get(this._open)?.issues || []).filter((i) => i.status === "Skipped" || i.status === "Failed").slice(0, BULK_VOLUMES).map((i) => i.id);
     return ids.length ? this._queue(ids) : undefined;
   }
 
   async _onAction_unqueueVolume(el) {
+    const sid = this._open;
+    const id = String(el.dataset.id);
+    if (this._pending.has(id)) return;
+    this._setIssueStatus(id, "Skipped", sid);
+    this._pending.add(id);
+    this._updatePanel(sid);
     try {
-      await this._my("POST", "unqueueIssue", { id: el.dataset.id });
-      this._setIssueStatus(el.dataset.id, "Skipped");
-      this._renderMylar();
+      await this._my("POST", "unqueueIssue", { id });
     } catch (err) {
+      this._setIssueStatus(id, "Wanted", sid);
       this._setError(err, "Abbrechen");
     }
+    this._pending.delete(id);
+    this._updatePanel(sid);
+    this._loadDownloads().catch(() => {});
   }
 
   // ── Downloads ────────────────────────────────────────────────────────
@@ -1068,12 +1131,12 @@ class MangaCard extends HTMLElement {
   }
 
   async _poll() {
-    const mylarOpen = this._mylarDialog?.open && this._myId;
-    if (!this._connected || (this._tab !== "downloads" && !mylarOpen)) return this._stopPoll();
+    const open = this._tab === "search" ? this._open : null;
+    if (!this._connected || (this._tab !== "downloads" && !open)) return this._stopPoll();
     try {
       const jobs = [];
       if (this._tab === "downloads") jobs.push(this._loadDownloads());
-      if (mylarOpen) jobs.push(this._loadMylar(this._myId));
+      if (open) jobs.push(this._loadMylar(open));
       await Promise.all(jobs);
     } catch (_) {
       /* a failed refresh is retried by the next tick; the screen keeps its last state */

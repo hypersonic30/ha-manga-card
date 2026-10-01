@@ -5,7 +5,7 @@ open a series, read volumes page by page — **right-to-left, left-to-right or s
 Reading progress is stored in Komga itself, so it follows you across devices. UI language: German.
 
 > [!IMPORTANT]
-> Requires the **[Books Integration](https://github.com/hypersonic30/ha-books-integration)** (v0.9.0 or newer) with a Komga URL and
+> Requires the **[Books Integration](https://github.com/hypersonic30/ha-books-integration)** (v0.9.1 or newer) with a Komga URL and
 > API key entered in its settings; for searching and downloading also a [Mylar3](https://github.com/mylar3/mylar3) URL and API key.
 > The integration proxies every request, so neither key ever reaches the browser.
 
@@ -27,9 +27,12 @@ With a Mylar3 configured in the integration, the card gets three tabs — **Bibl
 - **Suchen** — searches ComicVine through Mylar (press Enter or "Suchen"; ComicVine is slow, so not while typing). Every hit shows publisher, year and
   volume count; the chip **Deutsch** keeps German publishers (ComicVine has no language field, so this is a publisher list). **Hinzufügen** puts the
   series into Mylar and opens it. Series Mylar already follows are listed when the search is empty.
-- **Series in Mylar** — every volume with its state (*Nicht geladen, Wird gesucht, Lädt…, Fertig, Fehlgeschlagen*). **Laden** searches your indexers for
-  that volume, **Nächste 5 Bände laden** queues five at a time (every volume is one indexer search, and indexers have hourly limits). Nothing is
-  downloaded until you ask — new series start with all volumes on *Nicht geladen*.
+- **Series in Mylar** — tap a series (a hit that is already in Mylar, or one under "Deine Serien") and it **unfolds right below its row**, no popup: you
+  stay in the search tab with the hits above and below. Every volume shows its state (*Nicht geladen, Wird gesucht, Lädt…, Fertig, Fehlgeschlagen*).
+  **Laden** searches your indexers for that volume, **Nächste 5 Bände laden** queues five at a time (every volume is one indexer search, and indexers have
+  hourly limits), **Abbrechen** takes a volume back. The screen reacts at once (Mylar can be slow while it waits between indexer searches); if Mylar
+  refuses, the change is rolled back and the reason is shown. Nothing is downloaded until you ask — new series start with all volumes on *Nicht geladen*.
+  Emptying the search field brings back "Deine Serien".
 - **Downloads** — what is being searched, downloaded or finished (refreshes every 10 s while open). When Mylar has filed a new volume, the card asks
   Komga to scan its libraries, so it shows up in **Bibliothek** without waiting for Komga's own schedule. **Komga aktualisieren** does that on demand.
 
