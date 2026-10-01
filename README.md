@@ -25,7 +25,7 @@ Reading progress is stored in Komga itself, so it follows you across devices. UI
 With a Mylar3 configured in the integration, the card gets three tabs — **Bibliothek**, **Suchen**, **Downloads**. Without it the card is a plain reader.
 
 - **Suchen** — searches ComicVine through Mylar (press Enter or "Suchen"; ComicVine is slow, so not while typing). Every hit shows publisher, year and
-  volume count; the chip **Deutsch** keeps German publishers (ComicVine has no language field, so this is a publisher list). **Hinzufügen** puts the
+  volume count; the chips **Deutsch** and **Englisch** keep German or English publishers (ComicVine has no language field, so this is a publisher list; one active in both, like Tokyopop, shows under both). Your choice is remembered. **Hinzufügen** puts the
   series into Mylar and opens it. Series Mylar already follows are listed when the search is empty.
 - **Series in Mylar** — tap a series (a hit that is already in Mylar, or one under "Deine Serien") and it **unfolds right below its row**, no popup: you
   stay in the search tab with the hits above and below. Every volume shows its state (*Nicht geladen, Wird gesucht, Lädt…, Fertig, Fehlgeschlagen*).

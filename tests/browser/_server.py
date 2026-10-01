@@ -44,6 +44,7 @@ _FINDS = {
         {"name": "Solo Leveling", "comicid": "167623", "comicyear": "2021", "issues": "20", "publisher": "Delcourt", "comicthumb": ""},
     ],
     "xss": [{"name": "<img src=x onerror=\"window.__xss=1\">Evil", "comicid": "666", "comicyear": "2020", "issues": "1", "publisher": "<b>Pub</b>", "comicthumb": "javascript:alert(1)"}],
+    "hack": [{"name": ".hack//Link", "comicid": "34752", "comicyear": "2010", "issues": "3", "publisher": "Tokyopop", "comicthumb": ""}],
     "big": [{"name": "Big Series", "comicid": "900", "comicyear": "2001", "issues": "8", "publisher": "Panini Verlag", "comicthumb": ""}],
 }
 _ISSUE_COUNT = {"72459": 4, "156426": 3, "900": 8}

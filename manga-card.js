@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.3.1";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -28,6 +28,14 @@ const BULK_GAP_MS = 1500;
 const SEEN_KEY = "mc-pp-seen"; // finished downloads we already told Komga about
 // Publishers whose editions are German (ComicVine has no language field).
 const GERMAN_PUBLISHERS = /verlag|carlsen|altraverse|egmont|tokyopop|kaz[eé]\b|cross ?cult|reprodukt|manga cult|dani books|hayabusa|splitter|feest|schwarzer turm|ehapa/i;
+// ... and the English-language ones (a publisher active in both, like Tokyopop, counts for both chips).
+const ENGLISH_PUBLISHERS = /\b(viz|kodansha comics|yen press|dark horse|seven seas|vertical|square enix|udon|del rey|titan|ablaze|denpa|j-novel|digital manga|one peace|tokyopop|inklore|comikey|marvel|dc comics|idw|image|boom|dynamite|oni press|usa)\b/i;
+const LANGS = [["all", "Alle"], ["de", "Deutsch"], ["en", "Englisch"]];
+const LANG_KEY = "mc-lang"; // the chosen language chip is remembered
+const inLanguage = (hit, lang) => {
+  const pub = hit.publisher || "";
+  return lang === "de" ? GERMAN_PUBLISHERS.test(pub) : lang === "en" ? ENGLISH_PUBLISHERS.test(pub) : true;
+};
 const ISSUE_STATUS = {
   Skipped: "Nicht geladen", Wanted: "Wird gesucht", Snatched: "Lädt…", Downloaded: "Fertig",
   Archived: "Archiviert", Failed: "Fehlgeschlagen", Ignored: "Ignoriert",
@@ -332,7 +340,7 @@ class MangaCard extends HTMLElement {
     this._found = null; // ComicVine hits of the last search
     this._findBusy = false;
     this._findToken = 0;
-    this._germanOnly = false;
+    this._lang = LANGS.some(([id]) => id === store(LANG_KEY)) ? store(LANG_KEY) : "all";
     this._adding = new Set();
     this._open = null; // Mylar series unfolded in the search tab
     this._seriesCache = new Map(); // Mylar series id -> { comic, issues }
@@ -779,8 +787,9 @@ class MangaCard extends HTMLElement {
     }
   }
 
-  _onAction_german(el) {
-    this._germanOnly = el.dataset.on === "1";
+  _onAction_lang(el) {
+    this._lang = el.dataset.lang;
+    store(LANG_KEY, this._lang);
     this._render();
   }
 
@@ -804,12 +813,12 @@ class MangaCard extends HTMLElement {
         ${rows ? `<div class="mc-section">Deine Serien</div><div class="mc-list">${rows}</div>` : ""}`;
     }
     const all = this._found;
-    const german = all.filter((r) => GERMAN_PUBLISHERS.test(r.publisher || ""));
-    const shown = (this._germanOnly ? german : all).slice(0, 60);
-    const chips = `<div class="mc-chips"><button class="mc-chip ${this._germanOnly ? "" : "active"}" data-action="german" data-on="0">Alle (${all.length})</button>
-      <button class="mc-chip ${this._germanOnly ? "active" : ""}" data-action="german" data-on="1">Deutsch (${german.length})</button></div>`;
+    const shown = all.filter((r) => inLanguage(r, this._lang)).slice(0, 60);
+    const chips = `<div class="mc-chips">${LANGS.map(([id, label]) =>
+      `<button class="mc-chip ${this._lang === id ? "active" : ""}" data-action="lang" data-lang="${id}">${label} (${all.filter((r) => inLanguage(r, id)).length})</button>`).join("")}</div>`;
     if (!shown.length) {
-      return `${chips}<div class="mc-empty">${all.length ? "Keine deutsche Ausgabe gefunden. Tippe auf „Alle“." : `Nichts gefunden für „${esc(this._findQuery)}“.`}</div>`;
+      const what = { de: "deutsche", en: "englische" }[this._lang];
+      return `${chips}<div class="mc-empty">${all.length ? `Keine ${what} Ausgabe gefunden. Tippe auf „Alle“.` : `Nichts gefunden für „${esc(this._findQuery)}“.`}</div>`;
     }
     const rows = shown.map((r) => this._itemRow({
       id: String(r.comicid), name: r.name, cover: r.comicthumb || r.comicimage, mine: mine.has(String(r.comicid)), badge: true,
