@@ -2,7 +2,8 @@
 
 A phone-first Lovelace card for reading manga and comics from a [Komga](https://komga.org) server: browse your library,
 open a series, read volumes page by page — **right-to-left, left-to-right or scrolling (webtoons)** — and pick up where you stopped.
-Reading progress is stored in Komga itself, so it follows you across devices. UI language: German.
+Reading progress is stored in Komga itself, so it follows you across devices - and with the integration's *People* (Books Integration ≥ 0.10.0)
+everyone reads with their own Komga account, so nobody overwrites anybody else's progress. UI language: German.
 
 > [!IMPORTANT]
 > Requires the **[Books Integration](https://github.com/hypersonic30/ha-books-integration)** (v0.9.1 or newer) with a Komga URL and
