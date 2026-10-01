@@ -5,8 +5,9 @@ open a series, read volumes page by page — **right-to-left, left-to-right or s
 Reading progress is stored in Komga itself, so it follows you across devices. UI language: German.
 
 > [!IMPORTANT]
-> Requires the **[Books Integration](https://github.com/hypersonic30/ha-books-integration)** (v0.8.0 or newer) with a Komga URL and
-> API key entered in its settings. The integration proxies every request, so the Komga API key never reaches the browser.
+> Requires the **[Books Integration](https://github.com/hypersonic30/ha-books-integration)** (v0.9.0 or newer) with a Komga URL and
+> API key entered in its settings; for searching and downloading also a [Mylar3](https://github.com/mylar3/mylar3) URL and API key.
+> The integration proxies every request, so neither key ever reaches the browser.
 
 ## Features
 
@@ -18,6 +19,21 @@ Reading progress is stored in Komga itself, so it follows you across devices. UI
   metadata (manga → right-to-left, comics → left-to-right, webtoons → scrolling) and can be changed per series; "Ganze Seite" or
   "Breite füllen". Pages ahead are preloaded, a finished volume offers **Weiter mit Band N**.
 - **Progress** — saved to Komga a moment after you turn a page (and when you close the reader). Just opening a volume changes nothing.
+
+## Search and download (optional, needs Mylar3)
+
+With a Mylar3 configured in the integration, the card gets three tabs — **Bibliothek**, **Suchen**, **Downloads**. Without it the card is a plain reader.
+
+- **Suchen** — searches ComicVine through Mylar (press Enter or "Suchen"; ComicVine is slow, so not while typing). Every hit shows publisher, year and
+  volume count; the chip **Deutsch** keeps German publishers (ComicVine has no language field, so this is a publisher list). **Hinzufügen** puts the
+  series into Mylar and opens it. Series Mylar already follows are listed when the search is empty.
+- **Series in Mylar** — every volume with its state (*Nicht geladen, Wird gesucht, Lädt…, Fertig, Fehlgeschlagen*). **Laden** searches your indexers for
+  that volume, **Nächste 5 Bände laden** queues five at a time (every volume is one indexer search, and indexers have hourly limits). Nothing is
+  downloaded until you ask — new series start with all volumes on *Nicht geladen*.
+- **Downloads** — what is being searched, downloaded or finished (refreshes every 10 s while open). When Mylar has filed a new volume, the card asks
+  Komga to scan its libraries, so it shows up in **Bibliothek** without waiting for Komga's own schedule. **Komga aktualisieren** does that on demand.
+
+Covers of search hits load straight from ComicVine (your browser asks ComicVine for them).
 
 ## Installation
 

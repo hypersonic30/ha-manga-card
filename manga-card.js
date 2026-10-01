@@ -16,11 +16,22 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
 const KOMGA_URL = "/api/books/komga/"; // the same as a URL, for signing image paths
+const MYLAR = "books/mylar/"; // the Books integration proxies Mylar3 here (search / add / download)
+const POLL_MS = 10000; // refresh rate of the downloads tab and of an open Mylar series
+const BULK_VOLUMES = 5; // "load the next volumes" queues this many (every volume is one indexer search)
+const BULK_GAP_MS = 1500;
+const SEEN_KEY = "mc-pp-seen"; // finished downloads we already told Komga about
+// Publishers whose editions are German (ComicVine has no language field).
+const GERMAN_PUBLISHERS = /verlag|carlsen|altraverse|egmont|tokyopop|kaz[eé]\b|cross ?cult|reprodukt|manga cult|dani books|hayabusa|splitter|feest|schwarzer turm|ehapa/i;
+const ISSUE_STATUS = {
+  Skipped: "Nicht geladen", Wanted: "Wird gesucht", Snatched: "Lädt…", Downloaded: "Fertig",
+  Archived: "Archiviert", Failed: "Fehlgeschlagen", Ignored: "Ignoriert",
+};
 const SIGN_EXPIRY_SECONDS = 24 * 3600;
 const PAGE_SIZE = 60;
 const SEEK_DEBOUNCE_MS = 1200;
@@ -54,12 +65,23 @@ function qs(params) {
   return q ? `?${q}` : "";
 }
 
+function errStatus(err) {
+  return err?.status ?? err?.status_code; // the test stub throws {status}, Home Assistant {status_code}
+}
+
 function errMessage(err) {
   if (!err) return "Unbekannter Fehler";
   if (typeof err === "string") return err;
   const body = err.body || {};
-  return body.error || body.message || err.message || err.error || `Fehler ${err.status || ""}`.trim();
+  return body.error || body.message || err.message || err.error || `Fehler ${errStatus(err) || ""}`.trim();
 }
+
+function volumeNumber(n) {
+  const f = parseFloat(n);
+  return Number.isNaN(f) ? Infinity : f;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function debounce(fn, wait) {
   let t = null;
@@ -234,6 +256,22 @@ const STYLE = `
   .mc-wt-page img { display: block; width: 100%; height: auto; }
   .mc-end { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
     background: rgba(0,0,0,0.86); text-align: center; padding: 24px; }
+  .mc-tabs { display: flex; gap: 6px; padding: 4px 16px 0; }
+  .mc-tab { flex: 1; min-height: 40px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 0.9em; font-weight: 600;
+    color: var(--primary-text-color); background: var(--mc-soft); border: 1px solid var(--mc-line); }
+  .mc-tab.active { background: color-mix(in srgb, var(--mc-accent) 90%, transparent); color: white; border-color: transparent; }
+  .mc-tab .mc-badge { position: static; display: inline-flex; margin-left: 6px; vertical-align: middle; }
+  .mc-searchbar .mc-btn { min-height: 44px; }
+  .mc-notice { margin: 10px 16px 0; padding: 10px 14px; border-radius: var(--mc-radius-sm); font-size: 0.9em; background: var(--mc-soft); border: 1px solid var(--mc-line); }
+  .mc-list { display: flex; flex-direction: column; gap: 8px; }
+  .mc-res { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: var(--mc-radius-sm); background: var(--mc-soft); }
+  .mc-res .mc-cover { flex: 0 0 52px; box-shadow: none; }
+  .mc-res .mc-btn { min-height: 38px; padding: 0 14px; font-size: 0.85em; white-space: nowrap; }
+  .mc-status { font-size: 0.72em; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+    background: color-mix(in srgb, var(--primary-text-color) 12%, transparent); }
+  .mc-status.wanted, .mc-status.snatched { background: color-mix(in srgb, var(--mc-accent) 35%, transparent); }
+  .mc-status.done { background: color-mix(in srgb, #34c759 35%, transparent); }
+  .mc-status.failed { background: color-mix(in srgb, var(--error-color, #db4437) 40%, transparent); }
   .mc-end .mc-title { font-size: 1.15em; font-weight: 700; }
 </style>`;
 
@@ -268,6 +306,24 @@ class MangaCard extends HTMLElement {
     // Detail
     this._detailId = null;
     this._detail = null; // { series, books }
+
+    // Mylar (search / add / download) - only when the integration has a Mylar configured
+    this._tab = "library"; // library | search | downloads
+    this._mylar = false; // true once Mylar answered
+    this._mylarIndex = []; // series Mylar follows
+    this._findDraft = "";
+    this._findQuery = "";
+    this._found = null; // ComicVine hits of the last search
+    this._findBusy = false;
+    this._findToken = 0;
+    this._germanOnly = false;
+    this._adding = new Set();
+    this._myId = null;
+    this._mySeries = null; // { comic, issues }
+    this._dl = { wanted: [], history: [], loaded: false };
+    this._ppSeen = null; // Set of finished downloads Komga was told about
+    this._queueing = false;
+    this._notice = null;
 
     // Reader
     this._reader = null;
@@ -313,6 +369,7 @@ class MangaCard extends HTMLElement {
       root.addEventListener("click", this._handleClick);
       root.addEventListener("input", this._handleInput);
       root.addEventListener("change", this._handleChange);
+      root.addEventListener("submit", this._handleSubmit);
     }
     this._render();
     if (this._hass) this._initialLoad();
@@ -325,7 +382,9 @@ class MangaCard extends HTMLElement {
       root.removeEventListener("click", this._handleClick);
       root.removeEventListener("input", this._handleInput);
       root.removeEventListener("change", this._handleChange);
+      root.removeEventListener("submit", this._handleSubmit);
     }
+    this._stopPoll();
     // A re-insert comes back within the same frame; only a card that is really gone releases its overlay.
     clearTimeout(this._overlayCleanupTimer);
     this._overlayCleanupTimer = setTimeout(() => {
@@ -341,7 +400,8 @@ class MangaCard extends HTMLElement {
     this.shadowRoot.innerHTML = `${STYLE}<ha-card><div class="mc-root">
       <div class="mc-header" id="mc-title"></div>
       <div id="mc-error"></div>
-      <form class="mc-searchbar" data-submit="search"><input type="search" id="mc-search" placeholder="Serie suchen" autocomplete="off" enterkeyhint="search" data-input="filter"></form>
+      <div class="mc-tabs" id="mc-tabs" hidden></div>
+      <form class="mc-searchbar" id="mc-searchbar" data-submit="search"><input type="search" id="mc-search" placeholder="Serie suchen" autocomplete="off" enterkeyhint="search" data-input="filter"><button type="submit" class="mc-btn" id="mc-find" hidden>Suchen</button></form>
       <div class="mc-body" id="mc-body"></div>
     </div></ha-card>`;
 
@@ -350,10 +410,15 @@ class MangaCard extends HTMLElement {
     this._overlay = document.createElement("div");
     this._overlay.className = "manga-card-overlay";
     this._overlayRoot = this._overlay.attachShadow({ mode: "open" });
-    this._overlayRoot.innerHTML = `${STYLE}<dialog class="mc-dialog" id="mc-detail"></dialog><dialog class="mc-dialog" id="mc-reader"></dialog>`;
+    this._overlayRoot.innerHTML = `${STYLE}<dialog class="mc-dialog" id="mc-detail"></dialog><dialog class="mc-dialog" id="mc-mylar"></dialog><dialog class="mc-dialog" id="mc-reader"></dialog>`;
     document.body.appendChild(this._overlay);
     this._detailDialog = this._overlayRoot.getElementById("mc-detail");
     this._readerDialog = this._overlayRoot.getElementById("mc-reader");
+    this._mylarDialog = this._overlayRoot.getElementById("mc-mylar");
+    this._mylarDialog.addEventListener("close", () => {
+      this._myId = null;
+      this._mySeries = null;
+    });
     this._detailDialog.addEventListener("close", () => {
       this._detailId = null;
       this._detail = null;
@@ -381,6 +446,15 @@ class MangaCard extends HTMLElement {
     if (typeof handler === "function") handler.call(this, el, ev);
   };
 
+  // A form without a handler navigates on Enter - inside a dashboard that reloads the whole page.
+  _handleSubmit = (ev) => {
+    const form = ev.target.closest("[data-submit]");
+    if (!form) return;
+    ev.preventDefault();
+    const handler = this[`_onSubmit_${form.dataset.submit}`];
+    if (typeof handler === "function") handler.call(this, form, ev);
+  };
+
   _handleChange = (ev) => {
     const el = ev.target.closest("[data-change]");
     if (!el) return;
@@ -390,20 +464,31 @@ class MangaCard extends HTMLElement {
 
   // ── Networking ───────────────────────────────────────────────────────
 
-  async _api(method, path, body) {
+  async _call(prefix, method, path, body) {
     try {
-      return await this._hass.callApi(method, `${KOMGA}${path}`, body);
+      return await this._hass.callApi(method, `${prefix}${path}`, body);
     } catch (err) {
-      if (err?.status === 401 && this._hass?.connection?.refreshAccessToken) {
+      if (errStatus(err) === 401 && this._hass?.connection?.refreshAccessToken) {
         try {
           await this._hass.connection.refreshAccessToken();
         } catch (_) {
           /* retry with whatever token we have */
         }
-        return this._hass.callApi(method, `${KOMGA}${path}`, body);
+        return this._hass.callApi(method, `${prefix}${path}`, body);
       }
       throw err;
     }
+  }
+
+  _api(method, path, body) {
+    return this._call(KOMGA, method, path, body);
+  }
+
+  /** Mylar answers HTTP 200 with {"success": false, ...} for its own errors. */
+  async _my(method, cmd, params) {
+    const res = await this._call(MYLAR, method, `${cmd}${qs(params || {})}`);
+    if (res && !Array.isArray(res) && res.success === false) throw new Error(res.error?.message || "Mylar-Fehler");
+    return res;
   }
 
   _sign(path) {
@@ -442,6 +527,7 @@ class MangaCard extends HTMLElement {
     try {
       this._libraries = (await this._api("GET", "v1/libraries")) || [];
       await Promise.all([this._loadSeries(true), this._loadContinue()]);
+      this._probeMylar();
     } catch (err) {
       this._loaded = false;
       this._loading = false;
@@ -479,6 +565,10 @@ class MangaCard extends HTMLElement {
   }
 
   _onInput_filter(el) {
+    if (this._tab === "search") {
+      this._findDraft = el.value; // ComicVine is slow and rate limited: search on Enter / the button, not while typing
+      return;
+    }
     this._filter = el.value.trim();
     clearTimeout(this._filterTimer);
     this._filterTimer = setTimeout(() => this._loadSeries(true).catch((e) => this._setError(e, "Suche")), 350);
@@ -501,9 +591,10 @@ class MangaCard extends HTMLElement {
     const title = this.shadowRoot.getElementById("mc-title");
     if (title) title.textContent = this._config.title || "Manga";
     this._renderError();
+    this._renderTabs();
     const body = this.shadowRoot.getElementById("mc-body");
     if (!body) return;
-    const html = this._renderBody();
+    const html = this._tab === "search" ? this._renderSearch() : this._tab === "downloads" ? this._renderDownloads() : this._renderBody();
     if (body._html !== html) {
       body._html = html;
       this._setHtml(body, html);
@@ -515,7 +606,7 @@ class MangaCard extends HTMLElement {
     if (!el) return;
     el.innerHTML = this._error
       ? `<div class="mc-error"><span>${esc(this._error)}</span><button data-action="dismissError" aria-label="Schließen">✕</button></div>`
-      : "";
+      : this._notice ? `<div class="mc-notice">${esc(this._notice)}</div>` : "";
   }
 
   _renderBody() {
@@ -531,7 +622,7 @@ class MangaCard extends HTMLElement {
     let grid;
     if (this._loading && !this._series.length) grid = `<div class="mc-loading">Lädt…</div>`;
     else if (!this._series.length) {
-      grid = `<div class="mc-empty">${this._filter ? "Keine Serie gefunden." : "Noch keine Mangas in Komga.<br>Sobald Dateien in der Bibliothek liegen, erscheinen sie hier."}</div>`;
+      grid = `<div class="mc-empty">${this._filter ? "Keine Serie gefunden." : `Noch keine Mangas in Komga.<br>${this._mylar ? "Im Tab „Suchen“ findest du welche und lädst sie herunter." : "Sobald Dateien in der Bibliothek liegen, erscheinen sie hier."}`}</div>`;
     } else {
       grid = `<div class="mc-grid">${this._series.map((s) => this._seriesTile(s)).join("")}</div>`;
       if (this._series.length < this._seriesTotal) {
@@ -570,6 +661,13 @@ class MangaCard extends HTMLElement {
     this._hydrate(el);
   }
 
+  /** Polling re-renders often; only touch the DOM (and the scroll position) when something changed. */
+  _setIfChanged(el, html) {
+    if (el._html === html) return;
+    el._html = html;
+    this._setHtml(el, html);
+  }
+
   _hydrate(root) {
     root.querySelectorAll("img[data-src]").forEach((img) => {
       const path = img.dataset.src;
@@ -580,6 +678,406 @@ class MangaCard extends HTMLElement {
       }
       this._sign(path).then((signed) => img.setAttribute("src", signed)).catch(() => img.remove());
     });
+  }
+
+  // ── Mylar: tabs, search, add, download ───────────────────────────────
+
+  /** Does Mylar answer? Without a Mylar in the integration's settings (503 "not configured") the card stays a plain reader. */
+  async _probeMylar() {
+    try {
+      const idx = await this._my("GET", "getIndex");
+      this._mylarIndex = idx.data || [];
+      this._mylar = true;
+    } catch (err) {
+      const notConfigured = errStatus(err) === 503 && /not configured/i.test(errMessage(err));
+      this._mylar = !notConfigured; // configured but unreachable right now: show the tabs, they explain what is wrong
+      if (!notConfigured) this._setError(err, "Mylar");
+    }
+    this._render();
+    if (this._mylar) this._loadDownloads().catch(() => {}); // fills the tab badge and notices volumes that finished while the card was closed
+  }
+
+  _renderTabs() {
+    const el = this.shadowRoot.getElementById("mc-tabs");
+    if (!el) return;
+    el.hidden = !this._mylar;
+    const bar = this.shadowRoot.getElementById("mc-searchbar");
+    const input = this.shadowRoot.getElementById("mc-search");
+    const find = this.shadowRoot.getElementById("mc-find");
+    if (bar) bar.hidden = this._tab === "downloads";
+    if (find) find.hidden = this._tab !== "search";
+    if (input) input.placeholder = this._tab === "search" ? "Titel suchen, z. B. Attack on Titan" : "Serie suchen";
+    if (!this._mylar) return;
+    const active = this._activeDownloads();
+    const html = [["library", "Bibliothek"], ["search", "Suchen"], ["downloads", "Downloads"]]
+      .map(([id, label]) => `<button class="mc-tab ${this._tab === id ? "active" : ""}" data-action="tab" data-tab="${id}">${label}${
+        id === "downloads" && active ? `<span class="mc-badge">${active}</span>` : ""}</button>`)
+      .join("");
+    if (el._html !== html) {
+      el._html = html;
+      el.innerHTML = html;
+    }
+  }
+
+  _onAction_tab(el) {
+    this._tab = el.dataset.tab;
+    const input = this.shadowRoot.getElementById("mc-search");
+    if (input) input.value = this._tab === "search" ? this._findDraft : this._tab === "library" ? this._filter : "";
+    if (this._tab === "downloads") {
+      this._loadDownloads().catch((e) => this._setError(e, "Downloads"));
+      this._startPoll();
+    }
+    this._render();
+  }
+
+  _onSubmit_search() {
+    if (this._tab === "search") this._runFind();
+  }
+
+  async _runFind() {
+    const q = this._findDraft.trim();
+    if (q.length < 2) return;
+    const token = ++this._findToken;
+    this._findQuery = q;
+    this._findBusy = true;
+    this._found = null;
+    this._render();
+    try {
+      const res = await this._my("GET", "findComic", { name: q });
+      if (token === this._findToken) this._found = Array.isArray(res) ? res : [];
+    } catch (err) {
+      if (token === this._findToken) {
+        this._found = [];
+        this._setError(err, "Suche");
+      }
+    }
+    if (token === this._findToken) {
+      this._findBusy = false;
+      this._render();
+    }
+  }
+
+  _onAction_german(el) {
+    this._germanOnly = el.dataset.on === "1";
+    this._render();
+  }
+
+  _ext(url, title, cls = "") {
+    // ComicVine covers load straight from ComicVine (they are not in Komga or Mylar's cache).
+    return `<div class="mc-cover ${cls}"><div class="mc-cover-fallback">${esc(title)}</div>${
+      /^https:\/\//.test(url || "") ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ""}</div>`;
+  }
+
+  _renderSearch() {
+    if (this._findBusy) return `<div class="mc-loading">Suche bei ComicVine… (kann einen Moment dauern)</div>`;
+    const mine = new Set(this._mylarIndex.map((s) => String(s.id)));
+    if (this._found === null) {
+      const tiles = this._mylarIndex
+        .map((s) => `<div class="mc-tile" data-action="openMylar" data-id="${esc(s.id)}">${this._ext(s.imageURL, s.name)}
+          <div class="mc-tile-title">${esc(s.name)}</div>
+          <div class="mc-tile-sub">${s.status === "Loading" ? "Wird angelegt…" : `${s.totalIssues ?? "?"} Bände`}</div></div>`)
+        .join("");
+      return `<div class="mc-hint">Gib oben einen Titel ein und tippe auf „Suchen“. Du wählst dann die Ausgabe (Verlag, Jahr, Bandzahl) und lädst die Bände einzeln herunter.</div>
+        ${tiles ? `<div class="mc-section">Deine Serien</div><div class="mc-grid">${tiles}</div>` : ""}`;
+    }
+    const all = this._found;
+    const german = all.filter((r) => GERMAN_PUBLISHERS.test(r.publisher || ""));
+    const shown = (this._germanOnly ? german : all).slice(0, 60);
+    const chips = `<div class="mc-chips"><button class="mc-chip ${this._germanOnly ? "" : "active"}" data-action="german" data-on="0">Alle (${all.length})</button>
+      <button class="mc-chip ${this._germanOnly ? "active" : ""}" data-action="german" data-on="1">Deutsch (${german.length})</button></div>`;
+    if (!shown.length) {
+      return `${chips}<div class="mc-empty">${all.length ? "Keine deutsche Ausgabe gefunden. Tippe auf „Alle“." : `Nichts gefunden für „${esc(this._findQuery)}“.`}</div>`;
+    }
+    const rows = shown.map((r) => {
+      const id = String(r.comicid);
+      const has = mine.has(id);
+      const busy = this._adding.has(id);
+      const sub = [r.publisher, r.comicyear, `${r.issues} ${Number(r.issues) === 1 ? "Band" : "Bände"}`].filter(Boolean).join(" · ");
+      const act = has
+        ? `<span class="mc-status done">In Mylar</span>`
+        : `<button class="mc-btn" data-action="addSeries" data-id="${esc(id)}" ${busy ? "disabled" : ""}>${busy ? "…" : "Hinzufügen"}</button>`;
+      return `<div class="mc-res" ${has ? `data-action="openMylar" data-id="${esc(id)}"` : ""}>${this._ext(r.comicthumb || r.comicimage, r.name)}
+        <div class="mc-vol-main"><div class="mc-vol-title">${esc(r.name)}</div><div class="mc-vol-sub">${esc(sub)}</div></div>${act}</div>`;
+    });
+    return `${chips}<div class="mc-list">${rows.join("")}</div>`;
+  }
+
+  async _onAction_addSeries(el) {
+    const id = el.dataset.id;
+    if (this._adding.has(id)) return;
+    this._adding.add(id);
+    this._render();
+    try {
+      await this._my("POST", "addComic", { id });
+      this._mylarIndex = (await this._my("GET", "getIndex")).data || [];
+      this._adding.delete(id);
+      this._render();
+      await this._openMylar(id);
+    } catch (err) {
+      this._adding.delete(id);
+      this._render();
+      this._setError(err, "Hinzufügen");
+    }
+  }
+
+  // ── Mylar series: volumes and their download state ────────────────────
+
+  async _onAction_openMylar(el) {
+    await this._openMylar(el.dataset.id);
+  }
+
+  async _openMylar(id) {
+    this._myId = id;
+    this._mySeries = null;
+    this._renderMylar();
+    if (!this._mylarDialog.open) this._mylarDialog.showModal();
+    try {
+      await this._loadMylar(id);
+    } catch (err) {
+      this._mylarDialog.close();
+      this._setError(err, "Serie laden");
+      return;
+    }
+    this._startPoll();
+  }
+
+  async _loadMylar(id) {
+    const res = await this._my("GET", "getComic", { id });
+    if (this._myId !== id) return;
+    const d = res.data || {};
+    this._mySeries = {
+      comic: (d.comic || [])[0] || null, // empty while Mylar is still fetching the series from ComicVine
+      issues: [...(d.issues || [])].sort((a, b) => volumeNumber(a.number) - volumeNumber(b.number)),
+    };
+    this._renderMylar();
+  }
+
+  _renderMylar() {
+    const close = `<button class="mc-btn secondary round mc-close" data-action="closeMylar" aria-label="Schließen">✕</button>`;
+    const d = this._mySeries;
+    if (!d || !d.comic) {
+      this._setIfChanged(this._mylarDialog, `<div class="mc-sheet">${close}<div class="mc-loading">${d ? "Serie wird angelegt…" : "Lädt…"}</div></div>`);
+      return;
+    }
+    const { comic, issues } = d;
+    const count = (st) => issues.filter((i) => i.status === st).length;
+    const open = issues.filter((i) => i.status === "Skipped" || i.status === "Failed").length;
+    const pills = [
+      comic.publisher ? `<span class="mc-pill">${esc(comic.publisher)}</span>` : "",
+      comic.publishYear ? `<span class="mc-pill">${esc(comic.publishYear)}</span>` : "",
+      `<span class="mc-pill">${issues.length} Bände</span>`,
+      count("Downloaded") ? `<span class="mc-pill ok">${count("Downloaded")} fertig</span>` : "",
+    ].join("");
+    const rows = issues.map((i) => {
+      const st = i.status || "Skipped";
+      const cls = st === "Downloaded" ? "done" : st === "Wanted" ? "wanted" : st === "Snatched" ? "snatched" : st === "Failed" ? "failed" : "";
+      let act = "";
+      if (st === "Skipped" || st === "Failed") act = `<button class="mc-btn secondary" data-action="queueVolume" data-id="${esc(i.id)}">Laden</button>`;
+      else if (st === "Wanted") act = `<button class="mc-btn secondary" data-action="unqueueVolume" data-id="${esc(i.id)}">Abbrechen</button>`;
+      const date = i.releaseDate && i.releaseDate !== "0000-00-00" ? i.releaseDate : i.issueDate && i.issueDate !== "0000-00-00" ? i.issueDate : "";
+      return `<div class="mc-vol" style="cursor:default"><div class="mc-vol-main"><div class="mc-vol-title">Band ${esc(i.number)}</div>
+        <div class="mc-vol-sub">${esc(date)}</div></div><span class="mc-status ${cls}">${esc(ISSUE_STATUS[st] || st)}</span>${act}</div>`;
+    });
+    this._setIfChanged(this._mylarDialog, `<div class="mc-sheet">${close}
+      <div class="mc-detail-top">${this._ext(comic.imageURL, comic.name)}
+        <div><div class="mc-detail-title">${esc(comic.name)}</div><div class="mc-pills">${pills}</div></div></div>
+      <div class="mc-actions">
+        <button class="mc-btn block" data-action="queueNext" ${open && !this._queueing ? "" : "disabled"}>${
+          this._queueing ? "Wird angestoßen…" : open ? `Nächste ${Math.min(open, BULK_VOLUMES)} Bände laden` : "Alles geladen oder in Arbeit"}</button>
+        <div class="mc-hint">Jeder Band löst eine Suche bei deinen Indexern aus (die haben Stundenlimits), darum immer nur ein paar auf einmal.</div>
+      </div>
+      <div class="mc-section" style="margin-bottom:8px">Bände</div>
+      <div class="mc-vols">${rows.join("") || `<div class="mc-empty">Mylar kennt noch keine Bände.</div>`}</div></div>`);
+  }
+
+  _onAction_closeMylar() {
+    this._mylarDialog.close();
+  }
+
+  _setIssueStatus(id, status) {
+    const issue = this._mySeries?.issues.find((i) => String(i.id) === String(id));
+    if (issue) issue.status = status;
+  }
+
+  async _queue(ids) {
+    if (this._queueing) return;
+    this._queueing = true;
+    this._renderMylar();
+    const gap = this._config.queue_gap_ms ?? BULK_GAP_MS;
+    try {
+      for (let n = 0; n < ids.length; n++) {
+        if (n) await sleep(gap); // spread the indexer searches out
+        await this._my("POST", "queueIssue", { id: ids[n] }); // answers at once, Mylar searches in the background
+        this._setIssueStatus(ids[n], "Wanted");
+        this._renderMylar();
+      }
+    } catch (err) {
+      this._setError(err, "Download");
+    }
+    this._queueing = false;
+    this._renderMylar();
+    this._startPoll();
+    this._loadDownloads().catch(() => {}); // the downloads badge
+    this._pollSoon();
+  }
+
+  _onAction_queueVolume(el) {
+    return this._queue([el.dataset.id]);
+  }
+
+  _onAction_queueNext() {
+    const ids = (this._mySeries?.issues || []).filter((i) => i.status === "Skipped" || i.status === "Failed").slice(0, BULK_VOLUMES).map((i) => i.id);
+    return ids.length ? this._queue(ids) : undefined;
+  }
+
+  async _onAction_unqueueVolume(el) {
+    try {
+      await this._my("POST", "unqueueIssue", { id: el.dataset.id });
+      this._setIssueStatus(el.dataset.id, "Skipped");
+      this._renderMylar();
+    } catch (err) {
+      this._setError(err, "Abbrechen");
+    }
+  }
+
+  // ── Downloads ────────────────────────────────────────────────────────
+
+  async _loadDownloads() {
+    const [wanted, history] = await Promise.all([this._my("GET", "getWanted"), this._my("GET", "getHistory")]);
+    this._dl = { wanted: wanted.issues || [], history: history.data || [], loaded: true };
+    this._render();
+    this._checkFinished(this._dl.history).catch(() => {});
+  }
+
+  /** One row per volume: still searched, being downloaded, or finished. Mylar's history says "Post-Processed" when a volume is filed. */
+  _downloadRows() {
+    const rows = [];
+    const byIssue = new Map();
+    for (const h of [...this._dl.history].sort((a, b) => String(b.DateAdded).localeCompare(String(a.DateAdded)))) {
+      const prev = byIssue.get(h.IssueID);
+      if (!prev || (h.Status === "Post-Processed" && prev.Status !== "Post-Processed")) byIssue.set(h.IssueID, h);
+    }
+    const wantedIds = new Set(this._dl.wanted.map((w) => String(w.IssueID)));
+    for (const w of this._dl.wanted) {
+      rows.push({ state: "wanted", title: w.ComicName, vol: w.Issue_Number, at: w.DateAdded, provider: "" });
+    }
+    for (const h of byIssue.values()) {
+      if (wantedIds.has(String(h.IssueID))) continue;
+      const state = h.Status === "Post-Processed" ? "done" : h.Status === "Snatched" ? "snatched" : "failed";
+      rows.push({ state, title: h.ComicName, vol: h.Issue_Number, at: h.DateAdded, provider: h.Provider || "", raw: h.Status });
+    }
+    const order = { wanted: 0, snatched: 1, failed: 2, done: 3 };
+    return rows.sort((a, b) => order[a.state] - order[b.state] || String(b.at).localeCompare(String(a.at))).slice(0, 40);
+  }
+
+  _activeDownloads() {
+    return this._dl.wanted.length + this._downloadRows().filter((r) => r.state === "snatched").length;
+  }
+
+  _renderDownloads() {
+    const actions = `<div class="mc-actions-row"><button class="mc-btn secondary" data-action="refreshDownloads">Aktualisieren</button>
+      <button class="mc-btn secondary" data-action="scanKomga">Komga aktualisieren</button></div>`;
+    if (!this._dl.loaded) return `${actions}<div class="mc-loading">Lädt…</div>`;
+    const rows = this._downloadRows();
+    if (!rows.length) return `${actions}<div class="mc-empty">Noch keine Downloads.<br>Im Tab „Suchen“ eine Serie hinzufügen und Bände laden.</div>`;
+    const label = { wanted: "Wird gesucht", snatched: "Lädt…", done: "Fertig", failed: "Fehlgeschlagen" };
+    const line = (r) => {
+      const stuck = r.state === "snatched" && Date.now() - new Date(String(r.at).replace(" ", "T")).getTime() > 15 * 60 * 1000;
+      const sub = [r.provider, r.at, stuck ? "wartet schon länger – schau in Mylar nach" : ""].filter(Boolean).join(" · ");
+      return `<div class="mc-res"><div class="mc-vol-main"><div class="mc-vol-title">${esc(r.title)} · Band ${esc(r.vol)}</div>
+        <div class="mc-vol-sub">${esc(sub)}</div></div><span class="mc-status ${r.state}">${label[r.state]}</span></div>`;
+    };
+    const active = rows.filter((r) => r.state === "wanted" || r.state === "snatched");
+    const past = rows.filter((r) => r.state === "done" || r.state === "failed");
+    return `${actions}${active.length ? `<div class="mc-section">Aktiv</div><div class="mc-list">${active.map(line).join("")}</div>` : ""}${
+      past.length ? `<div class="mc-section">Zuletzt</div><div class="mc-list">${past.map(line).join("")}</div>` : ""}`;
+  }
+
+  _onAction_refreshDownloads() {
+    this._loadDownloads().catch((e) => this._setError(e, "Downloads"));
+  }
+
+  async _onAction_scanKomga() {
+    try {
+      await this._scanKomga();
+      this._setNotice("Komga scannt die Bibliothek. Neue Bände erscheinen gleich im Tab „Bibliothek“.");
+    } catch (err) {
+      this._setError(err, "Komga");
+    }
+  }
+
+  _setNotice(text) {
+    this._notice = text;
+    this._renderError();
+    clearTimeout(this._noticeTimer);
+    this._noticeTimer = setTimeout(() => {
+      this._notice = null;
+      this._renderError();
+    }, 5000);
+  }
+
+  /** Ask Komga to look at its libraries now (cheap: unchanged folders are skipped). */
+  async _scanKomga() {
+    const libs = this._libraries.length ? this._libraries : (await this._api("GET", "v1/libraries")) || [];
+    await Promise.all(libs.map((l) => this._api("POST", `v1/libraries/${l.id}/scan`)));
+    clearTimeout(this._rescanTimer);
+    this._rescanTimer = setTimeout(() => {
+      this._loadSeries(true).catch(() => {});
+      this._loadContinue().catch(() => {});
+    }, this._config.rescan_wait_ms ?? 6000);
+  }
+
+  /**
+   * A finished download ("Post-Processed") is a new file in the library folder: tell Komga once. Already finished volumes are
+   * remembered (the first run only takes a baseline), so old history never triggers a scan.
+   */
+  async _checkFinished(history) {
+    if (!history) history = (await this._my("GET", "getHistory")).data || [];
+    const done = history.filter((h) => h.Status === "Post-Processed").map((h) => `${h.IssueID}|${h.DateAdded}`);
+    if (this._ppSeen === null) {
+      const raw = store(SEEN_KEY);
+      try {
+        this._ppSeen = new Set(raw === null ? done : JSON.parse(raw));
+      } catch (_) {
+        this._ppSeen = new Set(done);
+      }
+      if (raw === null) store(SEEN_KEY, JSON.stringify([...this._ppSeen]));
+    }
+    const fresh = done.filter((k) => !this._ppSeen.has(k));
+    if (!fresh.length) return;
+    fresh.forEach((k) => this._ppSeen.add(k));
+    store(SEEN_KEY, JSON.stringify([...this._ppSeen]));
+    await this._scanKomga();
+  }
+
+  // ── Polling (only while something on screen can change) ──────────────
+
+  _startPoll() {
+    if (this._pollTimer || !this._connected) return;
+    this._pollTimer = setInterval(() => this._poll(), this._config.poll_ms ?? POLL_MS);
+  }
+
+  _stopPoll() {
+    clearInterval(this._pollTimer);
+    this._pollTimer = null;
+  }
+
+  _pollSoon() {
+    clearTimeout(this._pollSoonTimer);
+    this._pollSoonTimer = setTimeout(() => this._poll(), 3000);
+  }
+
+  async _poll() {
+    const mylarOpen = this._mylarDialog?.open && this._myId;
+    if (!this._connected || (this._tab !== "downloads" && !mylarOpen)) return this._stopPoll();
+    try {
+      const jobs = [];
+      if (this._tab === "downloads") jobs.push(this._loadDownloads());
+      if (mylarOpen) jobs.push(this._loadMylar(this._myId));
+      await Promise.all(jobs);
+    } catch (_) {
+      /* a failed refresh is retried by the next tick; the screen keeps its last state */
+    }
   }
 
   // ── Series detail ────────────────────────────────────────────────────

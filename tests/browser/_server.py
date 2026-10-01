@@ -32,10 +32,46 @@ def _fresh():
     return series, books
 
 
+# Fake Mylar3 behind /api/books/mylar/{cmd}: what ComicVine finds, what Mylar follows, and the download life cycle.
+_FINDS = {
+    "titan": [
+        {"name": "Attack on Titan", "comicid": "72459", "comicyear": "2014", "issues": "4", "publisher": "Carlsen Verlag", "comicthumb": "https://example.invalid/aot.jpg"},
+        {"name": "Attack on Titan", "comicid": "49866", "comicyear": "2012", "issues": "34", "publisher": "Kodansha Comics USA", "comicthumb": ""},
+        {"name": "Attack on Titan - Ataque a los Titanes", "comicid": "176997", "comicyear": "2016", "issues": "5", "publisher": "Ovni Press", "comicthumb": ""},
+    ],
+    "solo": [
+        {"name": "Solo Leveling", "comicid": "156426", "comicyear": "2020", "issues": "3", "publisher": "Altraverse", "comicthumb": ""},
+        {"name": "Solo Leveling", "comicid": "167623", "comicyear": "2021", "issues": "20", "publisher": "Delcourt", "comicthumb": ""},
+    ],
+    "xss": [{"name": "<img src=x onerror=\"window.__xss=1\">Evil", "comicid": "666", "comicyear": "2020", "issues": "1", "publisher": "<b>Pub</b>", "comicthumb": "javascript:alert(1)"}],
+    "big": [{"name": "Big Series", "comicid": "900", "comicyear": "2001", "issues": "8", "publisher": "Panini Verlag", "comicthumb": ""}],
+}
+_ISSUE_COUNT = {"72459": 4, "156426": 3, "900": 8}
+
+
+def _mylar_issues(cid, statuses=None):
+    n = _ISSUE_COUNT[cid]
+    base = int(cid) * 100
+    return [{"id": str(base + i), "name": f"Band {i}", "number": str(i), "status": (statuses or {}).get(i, "Skipped"),
+             "releaseDate": f"20{10 + i}-01-01", "issueDate": "0000-00-00", "comicName": "x", "imageURL": ""} for i in range(1, n + 1)]
+
+
+def _fresh_mylar():
+    return {
+        "off": False, "error": False,
+        "index": [{"id": "72459", "name": "Attack on Titan", "imageURL": "", "status": "Active", "publisher": "Carlsen Verlag",
+                   "publishYear": "March 2014 - March 2022", "year": "2014", "totalIssues": 4}],
+        "issues": {"72459": _mylar_issues("72459", {1: "Downloaded"})},
+        "history": [{"IssueID": "7245901", "ComicName": "Attack on Titan", "Issue_Number": "1", "DateAdded": "2026-09-01 10:00:00",
+                     "Status": "Post-Processed", "Provider": "treasure-maps (Prowlarr)", "ComicID": "72459"}],
+    }
+
+
 class State:
     lock = threading.Lock()
     series, books, log = _fresh()[0], _fresh()[1], []
     down = False
+    mylar = _fresh_mylar()
 
 
 def reset():
@@ -43,6 +79,7 @@ def reset():
         State.series, State.books = _fresh()
         State.log = []
         State.down = False
+        State.mylar = _fresh_mylar()
 
 
 def calls():
@@ -134,6 +171,8 @@ class H(http.server.SimpleHTTPRequestHandler):
                 if m:
                     State.books[m.group(1)]["readProgress"] = {"page": body["page"], "completed": body["completed"]}
                     return self._send(204)
+            if method == "POST" and re.fullmatch(r"v1/libraries/\w+/scan", path):
+                return self._send(202)
             if method in ("POST", "DELETE"):
                 m = re.fullmatch(r"v1/series/(\w+)/read-progress", path)
                 if m:
@@ -143,7 +182,72 @@ class H(http.server.SimpleHTTPRequestHandler):
                     return self._send(204)
         self._send(404, {"error": f"unhandled {method} {path}"})
 
+    def _mylar(self, method):
+        url = urllib.parse.urlparse(self.path); cmd = url.path[len("/api/books/mylar/"):]
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+        reads = {"findComic", "getIndex", "getComic", "getWanted", "getHistory"}
+        writes = {"addComic", "queueIssue", "unqueueIssue", "forceSearch", "pauseComic", "resumeComic"}
+        with State.lock:
+            M = State.mylar
+            State.log.append({"method": method, "path": "mylar/" + cmd, "query": q, "body": None})
+            if M["off"]:
+                return self._send(503, {"error": "Mylar is not configured"})
+            if (method == "GET" and cmd not in reads) or (method == "POST" and cmd not in writes) or method not in ("GET", "POST"):
+                return self._send(403, {"error": f"{method} /{cmd} is not available through Home Assistant"})
+            if M["error"]:
+                return self._send(200, {"success": False, "error": {"code": 500, "message": "Mylar kaputt"}})
+            if cmd == "findComic":
+                key = next((k for k in _FINDS if k in q.get("name", "").lower()), None)
+                return self._send(200, _FINDS.get(key, []))
+            if cmd == "getIndex":
+                return self._send(200, {"success": True, "data": M["index"]})
+            if cmd == "getComic":
+                cid = q["id"]; ser = next((x for x in M["index"] if x["id"] == cid), None)
+                return self._send(200, {"success": True, "data": {"comic": [ser] if ser else [], "issues": M["issues"].get(cid, []), "annuals": []}})
+            if cmd == "getWanted":
+                out = []
+                for ser in M["index"]:
+                    for i in M["issues"].get(ser["id"], []):
+                        if i["status"] == "Wanted":
+                            out.append({"ComicName": ser["name"], "Issue_Number": i["number"], "IssueID": i["id"], "ComicID": ser["id"], "Status": "Wanted", "DateAdded": "2026-10-01"})
+                return self._send(200, {"issues": out})
+            if cmd == "getHistory":
+                return self._send(200, {"success": True, "data": M["history"]})
+            if cmd == "addComic":
+                cid = q["id"]
+                if cid not in M["issues"]:
+                    find = next(r for rs in _FINDS.values() for r in rs if r["comicid"] == cid)
+                    M["index"].append({"id": cid, "name": find["name"], "imageURL": "", "status": "Active", "publisher": find["publisher"],
+                                       "publishYear": find["comicyear"], "year": find["comicyear"], "totalIssues": int(find["issues"])})
+                    M["issues"][cid] = _mylar_issues(cid)
+                return self._send(200, {"success": True, "data": "Successfully queued up addding id: " + cid})
+            if cmd in ("queueIssue", "unqueueIssue"):
+                for lst in M["issues"].values():
+                    for i in lst:
+                        if i["id"] == q["id"]:
+                            i["status"] = "Wanted" if cmd == "queueIssue" else "Skipped"
+                return self._send(202 if cmd == "queueIssue" else 200, {"success": True, "data": "queued"})
+            return self._send(200, {"success": True, "data": "ok"})
+        self._send(404, {"error": "unhandled"})
+
+    def _mylar_advance(self, issue_id, state):
+        """Test helper: move a volume through Mylar's life cycle (Snatched -> Downloaded) and write its history like Mylar does."""
+        with State.lock:
+            M = State.mylar
+            for ser in M["index"]:
+                for i in M["issues"].get(ser["id"], []):
+                    if i["id"] == issue_id:
+                        i["status"] = {"snatched": "Snatched", "done": "Downloaded", "failed": "Failed", "skipped": "Skipped"}[state]
+                        hist = {"IssueID": issue_id, "ComicName": ser["name"], "Issue_Number": i["number"], "ComicID": ser["id"],
+                                "DateAdded": "2026-10-01 13:28:44", "Provider": "treasure-maps (Prowlarr)"}
+                        if state in ("snatched", "failed"):
+                            M["history"].insert(0, {**hist, "Status": "Snatched" if state == "snatched" else "Failed"})
+                        if state == "done":
+                            M["history"].insert(0, {**hist, "Status": "Post-Processed", "DateAdded": "2026-10-01 13:38:35"})
+
     def do_GET(self):
+        if self.path.startswith("/api/books/mylar/"):
+            return self._mylar("GET")
         if self.path.startswith("/__calls"):
             return self._send(200, calls())
         if self.path.startswith("/api/books/komga/"):
@@ -155,6 +259,15 @@ class H(http.server.SimpleHTTPRequestHandler):
             reset(); return self._send(200, {"ok": True})
         if self.path.startswith("/__down"):
             State.down = self.path.endswith("/1"); return self._send(200, {"ok": True})
+        if self.path.startswith("/__mylar/"):                          # test helpers: /__mylar/off/1, /__mylar/error/1, /__mylar/advance/<issue>/<state>
+            part = self.path.split("/")[2:]
+            if part[0] in ("off", "error"):
+                State.mylar[part[0]] = part[1] == "1"
+            elif part[0] == "advance":
+                self._mylar_advance(part[1], part[2])
+            return self._send(200, {"ok": True})
+        if self.path.startswith("/api/books/mylar/"):
+            return self._mylar("POST")
         if self.path.startswith("/__progress/"):                       # test helper: preset reading progress "book/page/completed"
             bid, page, done = self.path.split("/")[2:5]
             with State.lock: State.books[bid]["readProgress"] = {"page": int(page), "completed": done == "1"}
