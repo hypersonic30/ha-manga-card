@@ -1,0 +1,8 @@
+{
+  "name": "Manga Card",
+  "filename": "manga-card.js",
+  "render_readme": true,
+  "content_in_root": true,
+  "zip_release": false,
+  "homeassistant": "2024.8.0"
+}

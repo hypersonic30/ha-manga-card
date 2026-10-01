@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#222">
+<script>
+  // A tiny stand-in for Home Assistant's `hass` object: callApi goes to the fake Komga, signing is the identity.
+  window.hassStub = {
+    connection: {},
+    callWS: async (msg) => ({ path: msg.path }),
+    callApi: async (method, path, body) => {
+      const r = await fetch("/api/" + path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+      if (!r.ok) throw { status: r.status, body: await r.json().catch(() => ({})) };
+      const t = await r.text();
+      try { return t ? JSON.parse(t) : t; } catch (_) { return t; }
+    },
+  };
+</script>
+<script src="/manga-card.js" charset="utf-8"></script>
+</body></html>
