@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.3.1";
+const CARD_VERSION = "0.3.2";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -77,10 +77,13 @@ function errStatus(err) {
   return err?.status ?? err?.status_code; // the test stub throws {status}, Home Assistant {status_code}
 }
 
+const NO_PERSON_TEXT = "Für dein Konto ist keine Person angelegt. Bitte den Verwalter, dich in der Books-Integration hinzuzufügen (Einstellungen → Geräte & Dienste → Books → Person hinzufügen).";
+
 function errMessage(err) {
   if (!err) return "Unbekannter Fehler";
   if (typeof err === "string") return err;
   const body = err.body || {};
+  if (body.code === "no_person") return NO_PERSON_TEXT; // the integration needs a person for every user of the card
   return body.error || body.message || err.message || err.error || `Fehler ${errStatus(err) || ""}`.trim();
 }
 

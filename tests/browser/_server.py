@@ -72,6 +72,7 @@ class State:
     lock = threading.Lock()
     series, books, log = _fresh()[0], _fresh()[1], []
     down = False
+    no_person = False
     mylar = _fresh_mylar()
 
 
@@ -80,6 +81,7 @@ def reset():
         State.series, State.books = _fresh()
         State.log = []
         State.down = False
+        State.no_person = False
         State.mylar = _fresh_mylar()
 
 
@@ -128,6 +130,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length)) if length else None
         with State.lock:
+            if State.no_person:                                       # the integration: this HA user is not a person
+                return self._send(403, {"error": "No person is set up for your Home Assistant user.", "code": "no_person"})
             if State.down:
                 return self._send(503, {"error": "Komga is not configured"})
             State.log.append({"method": method, "path": path, "query": q, "body": body})
@@ -262,6 +266,8 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/__reset"):
             reset(); return self._send(200, {"ok": True})
+        if self.path.startswith("/__noperson/"):
+            State.no_person = self.path.endswith("/1"); return self._send(200, {"ok": True})
         if self.path.startswith("/__down"):
             State.down = self.path.endswith("/1"); return self._send(200, {"ok": True})
         if self.path.startswith("/__mylar/"):                          # test helpers: /__mylar/off/1, /__mylar/error/1, /__mylar/advance/<issue>/<state>
