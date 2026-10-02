@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.3.2";
+const CARD_VERSION = "0.3.3";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -719,6 +719,11 @@ class MangaCard extends HTMLElement {
       this._mylarIndex = idx.data || [];
       this._mylar = true;
     } catch (err) {
+      if (err?.body?.code === "restricted") {          // child protection: Mylar (search, downloads) is closed for this person - a plain reader, no banner
+        this._mylar = false;
+        this._render();
+        return;
+      }
       const notConfigured = errStatus(err) === 503 && /not configured/i.test(errMessage(err));
       this._mylar = !notConfigured; // configured but unreachable right now: show the tabs, they explain what is wrong
       if (!notConfigured) this._setError(err, "Mylar");

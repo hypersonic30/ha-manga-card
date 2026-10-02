@@ -73,6 +73,7 @@ class State:
     series, books, log = _fresh()[0], _fresh()[1], []
     down = False
     no_person = False
+    restricted = False
     mylar = _fresh_mylar()
 
 
@@ -82,6 +83,7 @@ def reset():
         State.log = []
         State.down = False
         State.no_person = False
+        State.restricted = False
         State.mylar = _fresh_mylar()
 
 
@@ -188,6 +190,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         self._send(404, {"error": f"unhandled {method} {path}"})
 
     def _mylar(self, method):
+        if State.restricted:                                          # child protection: the integration closes Mylar for this person
+            return self._send(403, {"error": "Für dein Konto ist das gesperrt (Kinderschutz).", "code": "restricted"})
         url = urllib.parse.urlparse(self.path); cmd = url.path[len("/api/books/mylar/"):]
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         reads = {"findComic", "getIndex", "getComic", "getWanted", "getHistory"}
@@ -266,6 +270,8 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/__reset"):
             reset(); return self._send(200, {"ok": True})
+        if self.path.startswith("/__restricted/"):
+            State.restricted = self.path.endswith("/1"); return self._send(200, {"ok": True})
         if self.path.startswith("/__noperson/"):
             State.no_person = self.path.endswith("/1"); return self._send(200, {"ok": True})
         if self.path.startswith("/__down"):
