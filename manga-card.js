@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.4.1";
+const CARD_VERSION = "0.5.0";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -171,20 +171,23 @@ const STYLE = `
     border: 1px solid color-mix(in srgb, var(--divider-color, #8e8e93) 55%, transparent);
     box-shadow: 0 20px 45px rgba(0, 0, 0, 0.16), inset 0 1px 1px rgba(255, 255, 255, 0.12);
   }
-  .mc-root { position: relative; display: flex; flex-direction: column; color: var(--primary-text-color); }
+  ha-card::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.6;
+    background: linear-gradient(120deg, rgba(255,255,255,0.30), rgba(255,255,255,0.05) 35%, transparent 60%); }
+  .mc-root { position: relative; z-index: 1; display: flex; flex-direction: column; color: var(--primary-text-color); }
   .mc-header { padding: 18px 18px 6px; font-size: 1.35em; font-weight: 700; letter-spacing: -0.01em; }
   .mc-error { display: flex; align-items: center; gap: 8px; margin: 10px 16px 0; padding: 10px 14px; border-radius: var(--mc-radius-sm);
     color: white; font-size: 0.9em; background: color-mix(in srgb, var(--error-color, #db4437) 85%, transparent); }
   .mc-error button { margin-left: auto; background: none; border: none; color: inherit; font-size: 1.1em; cursor: pointer; }
-  .mc-body { padding: 8px 16px 18px; display: flex; flex-direction: column; gap: 14px; }
-  .mc-searchbar { display: flex; gap: 8px; padding: 6px 16px 0; }
-  .mc-searchbar input { flex: 1; min-height: 44px; padding: 0 16px; border-radius: 999px; font: inherit; font-size: 1em;
+  .mc-body { padding: 12px 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+  .mc-searchbar { display: flex; gap: 8px; padding: 12px 16px 0; }
+  .mc-searchbar input { flex: 1; min-width: 0; min-height: 44px; padding: 10px 16px; border-radius: 999px; font: inherit; font-size: 16px;
     color: var(--primary-text-color); background: var(--mc-soft); border: 1px solid var(--mc-line); }
+  .mc-searchbar input:focus { outline: 2px solid color-mix(in srgb, var(--mc-accent) 60%, transparent); }
   .mc-chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
-  .mc-chip { flex: 0 0 auto; min-height: 36px; padding: 6px 14px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 0.88em;
+  .mc-chip { flex: 0 0 auto; min-height: 36px; padding: 6px 14px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 0.88em; font-weight: 600;
     border: 1px solid var(--mc-line); background: var(--mc-soft); color: var(--primary-text-color); }
   .mc-chip.active { background: color-mix(in srgb, var(--mc-accent) 90%, transparent); color: white; border-color: transparent; }
-  .mc-section { font-size: 0.78em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--secondary-text-color); margin-top: 2px; }
+  .mc-section { font-size: 0.78em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--secondary-text-color); margin: 4px 2px 0; }
   .mc-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; }
   .mc-row .mc-tile { flex: 0 0 104px; }
   .mc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 14px 12px; }
@@ -203,41 +206,50 @@ const STYLE = `
     -webkit-box-orient: vertical; overflow: hidden; }
   .mc-tile-sub { font-size: 0.72em; color: var(--secondary-text-color); margin-top: 2px; }
   .mc-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 0 18px; border: none; cursor: pointer;
-    border-radius: 999px; font: inherit; font-size: 0.95em; font-weight: 600; color: white;
+    border-radius: 999px; font: inherit; font-size: 0.95em; font-weight: 600; color: white; transition: transform 0.1s ease;
     background: color-mix(in srgb, var(--mc-accent) 92%, transparent); box-shadow: 0 2px 8px rgba(var(--mc-accent-rgb), 0.35); }
-  .mc-btn:disabled { opacity: 0.5; }
+  .mc-btn:active { transform: scale(0.96); }
+  .mc-btn:disabled { opacity: 0.5; transform: none; box-shadow: none; }
   .mc-btn.secondary { color: var(--primary-text-color); background: var(--mc-soft); border: 1px solid var(--mc-line); box-shadow: none; }
   .mc-btn.round { width: 44px; min-width: 44px; padding: 0; }
   .mc-btn.block { width: 100%; }
   .mc-empty, .mc-loading { text-align: center; padding: 28px 12px; color: var(--secondary-text-color); font-size: 0.9em; line-height: 1.5; }
   .mc-hint { font-size: 0.8em; color: var(--secondary-text-color); line-height: 1.45; }
 
-  /* dialogs live in an overlay on <body> (see _ensureSkeleton) */
-  dialog.mc-dialog { padding: 0; border: none; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0;
-    background: var(--card-background-color, #1c1c1e); color: var(--primary-text-color);
-    font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif; }
-  dialog.mc-dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
-  .mc-sheet { position: relative; height: 100%; overflow-y: auto; padding: calc(56px + env(safe-area-inset-top)) 18px calc(24px + env(safe-area-inset-bottom)); }
-  .mc-close { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 5; }
-  .mc-detail-top { display: flex; gap: 14px; }
-  .mc-detail-top .mc-cover { flex: 0 0 110px; }
-  .mc-detail-title { font-size: 1.25em; font-weight: 700; line-height: 1.2; }
-  .mc-detail-sub { color: var(--secondary-text-color); font-size: 0.88em; margin-top: 4px; }
+  /* dialogs live in an overlay on <body> (see _ensureSkeleton): the detail is a glass sheet, the reader (mc-full) fills the screen */
+  dialog.mc-dialog { padding: 0; border: none; background: transparent; max-width: 100vw; max-height: 100dvh; color: var(--primary-text-color);
+    font-family: var(--paper-font-body1_-_font-family, -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif); }
+  dialog.mc-dialog::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  dialog.mc-dialog.mc-full { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; background: var(--card-background-color, #1c1c1e); }
+  dialog.mc-dialog.mc-full::backdrop { background: rgba(0, 0, 0, 0.7); }
+  .mc-sheet { position: relative; width: min(560px, 100vw); max-height: 92dvh; overflow-y: auto; border-radius: var(--mc-radius-lg);
+    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 94%, transparent); box-shadow: 0 30px 60px rgba(0,0,0,0.45);
+    padding: 56px 18px calc(22px + env(safe-area-inset-bottom)); }
+  .mc-sheet::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 160px; pointer-events: none; opacity: 0.5;
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--mc-accent) 35%, transparent), transparent); }
+  .mc-sheet > * { position: relative; }
+  .mc-close { position: absolute; top: 10px; right: 12px; z-index: 5; }
+  .mc-detail-top { display: flex; gap: 16px; align-items: flex-end; }
+  .mc-detail-top .mc-cover { flex: 0 0 120px; }
+  .mc-detail-title { font-size: 1.25em; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+  .mc-detail-sub { color: var(--secondary-text-color); font-size: 0.9em; margin-top: 4px; }
   .mc-pills { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
-  .mc-pill { font-size: 0.72em; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: color-mix(in srgb, var(--primary-text-color) 12%, transparent); }
-  .mc-pill.ok { background: color-mix(in srgb, #34c759 35%, transparent); }
-  .mc-actions { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
-  .mc-actions-row { display: flex; gap: 8px; }
+  .mc-pill { font-size: 0.7em; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--primary-text-color) 12%, transparent); }
+  .mc-pill.ok { background: rgba(67,160,71,0.25); }
+  .mc-actions { display: flex; flex-direction: column; gap: 10px; margin: 18px 0 14px; }
+  .mc-actions-row { display: flex; gap: 10px; }
   .mc-actions-row .mc-btn { flex: 1; }
-  .mc-summary { font-size: 0.9em; line-height: 1.5; color: var(--secondary-text-color); margin-bottom: 10px; }
-  .mc-vols { display: flex; flex-direction: column; gap: 8px; }
-  .mc-vol { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: var(--mc-radius-sm); cursor: pointer; background: var(--mc-soft); }
-  .mc-vol .mc-cover { flex: 0 0 52px; box-shadow: none; }
+  .mc-summary { font-size: 0.9em; line-height: 1.55; color: var(--secondary-text-color); margin-bottom: 12px; }
+  .mc-vols { display: flex; flex-direction: column; gap: 10px; }
+  .mc-vol { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: var(--mc-radius-md); cursor: pointer;
+    background: var(--mc-soft); border: 1px solid var(--mc-line); }
+  .mc-vol .mc-cover { flex: 0 0 52px; box-shadow: 0 3px 8px rgba(0,0,0,0.2); }
   .mc-vol-main { flex: 1; min-width: 0; }
-  .mc-vol-title { font-weight: 600; font-size: 0.92em; }
-  .mc-vol-sub { font-size: 0.76em; color: var(--secondary-text-color); margin-top: 2px; }
-  .mc-meter { height: 4px; border-radius: 4px; background: rgba(128,128,128,0.25); margin-top: 6px; overflow: hidden; }
-  .mc-meter > div { height: 100%; background: var(--mc-accent); }
+  .mc-vol-title { font-weight: 600; font-size: 0.95em; }
+  .mc-vol-sub { font-size: 0.8em; color: var(--secondary-text-color); margin-top: 2px; }
+  .mc-meter { height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--primary-text-color) 12%, transparent); margin-top: 6px; overflow: hidden; }
+  .mc-meter > div { height: 100%; border-radius: 999px; background: var(--mc-accent); transition: width 0.4s ease; }
+
 
   /* reader */
   .mc-reader { position: relative; width: 100%; height: 100%; background: #000; color: #fff; overflow: hidden; touch-action: manipulation; }
@@ -270,16 +282,23 @@ const STYLE = `
   .mc-wt-page img { display: block; width: 100%; height: auto; }
   .mc-end { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
     background: rgba(0,0,0,0.86); text-align: center; padding: 24px; }
-  .mc-tabs { display: flex; gap: 6px; padding: 4px 16px 0; }
-  .mc-tab { flex: 1; min-height: 40px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 0.9em; font-weight: 600;
-    color: var(--primary-text-color); background: var(--mc-soft); border: 1px solid var(--mc-line); }
-  .mc-tab.active { background: color-mix(in srgb, var(--mc-accent) 90%, transparent); color: white; border-color: transparent; }
-  .mc-tab .mc-badge { position: static; display: inline-flex; margin-left: 6px; vertical-align: middle; }
+  /* segmented nav */
+  .mc-tabs { display: flex; gap: 4px; margin: 8px 16px 0; padding: 4px; border-radius: 999px;
+    background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
+  .mc-tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; border: none; border-radius: 999px;
+    background: none; cursor: pointer; font: inherit; font-size: 0.9em; font-weight: 600; color: var(--secondary-text-color); }
+  .mc-tab.active { color: white; background: color-mix(in srgb, var(--mc-accent) 92%, transparent); box-shadow: 0 2px 8px rgba(var(--mc-accent-rgb), 0.4); }
+  .mc-tab .mc-badge { position: static; display: inline-flex; min-width: 0; height: auto; margin-left: 2px; padding: 1px 6px; font-weight: 400;
+    background: var(--error-color, #db4437); }
   .mc-searchbar .mc-btn { min-height: 44px; }
-  .mc-notice { margin: 10px 16px 0; padding: 10px 14px; border-radius: var(--mc-radius-sm); font-size: 0.9em; background: var(--mc-soft); border: 1px solid var(--mc-line); }
-  .mc-list { display: flex; flex-direction: column; gap: 8px; }
-  .mc-res { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: var(--mc-radius-sm); background: var(--mc-soft); }
-  .mc-res .mc-cover { flex: 0 0 52px; box-shadow: none; }
+  .mc-searchbar .mc-btn.round { width: 48px; min-width: 48px; }
+  .mc-btn ha-icon { --mdc-icon-size: 22px; }
+  .mc-tab ha-icon { --mdc-icon-size: 18px; }
+  .mc-notice { margin: 10px 16px 0; padding: 10px 14px; border-radius: var(--mc-radius-sm); font-size: 0.9em;
+    background: color-mix(in srgb, var(--success-color, #43a047) 25%, transparent); border: 1px solid color-mix(in srgb, var(--success-color, #43a047) 45%, transparent); }
+  .mc-list { display: flex; flex-direction: column; gap: 10px; }
+  .mc-res { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: var(--mc-radius-md); background: var(--mc-soft); border: 1px solid var(--mc-line); }
+  .mc-res .mc-cover { flex: 0 0 52px; box-shadow: 0 3px 8px rgba(0,0,0,0.2); }
   .mc-res .mc-btn { min-height: 38px; padding: 0 14px; font-size: 0.85em; white-space: nowrap; }
   .mc-confirm { margin-top: 8px; padding: 10px 12px; border-radius: var(--mc-radius-sm); background: var(--mc-soft); border: 1px solid rgba(127, 127, 127, 0.3); }
   .mc-check { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; font-size: 0.9em; cursor: pointer; }
@@ -290,8 +309,9 @@ const STYLE = `
   .mc-chev { flex: 0 0 auto; width: 28px; text-align: center; font-size: 1.5em; line-height: 1; color: var(--secondary-text-color); transition: transform 0.2s ease; }
   .mc-item.open .mc-chev { transform: rotate(90deg); }
   .mc-item.open .mc-res { border-bottom-left-radius: 0; border-bottom-right-radius: 0; background: color-mix(in srgb, var(--mc-accent) 14%, var(--mc-soft)); }
-  .mc-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--mc-soft); border-radius: 0 0 var(--mc-radius-sm) var(--mc-radius-sm);
-    border-top: 1px solid var(--mc-line); animation: mc-unfold 0.18s ease; }
+  .mc-item.open .mc-res { border-bottom-left-radius: 0; border-bottom-right-radius: 0; background: color-mix(in srgb, var(--mc-accent) 14%, var(--mc-soft)); }
+  .mc-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--mc-soft); border: 1px solid var(--mc-line); border-top: none;
+    border-radius: 0 0 var(--mc-radius-md) var(--mc-radius-md); animation: mc-unfold 0.18s ease; }
   @keyframes mc-unfold { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
   .mc-panel .mc-pills { margin-top: 0; }
   .mc-inline-vols { display: flex; flex-direction: column; gap: 2px; max-height: 52vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
@@ -300,10 +320,10 @@ const STYLE = `
   .mc-ivol-n { font-weight: 600; font-size: 0.9em; }
   .mc-ivol-d { font-size: 0.74em; color: var(--secondary-text-color); }
   .mc-ivol .mc-btn { min-height: 34px; padding: 0 12px; font-size: 0.82em; }
-  .mc-status { font-size: 0.72em; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  .mc-status { font-size: 0.7em; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
     background: color-mix(in srgb, var(--primary-text-color) 12%, transparent); }
-  .mc-status.wanted, .mc-status.snatched { background: color-mix(in srgb, var(--mc-accent) 35%, transparent); }
-  .mc-status.done { background: color-mix(in srgb, #34c759 35%, transparent); }
+  .mc-status.wanted, .mc-status.snatched { background: rgba(30,136,229,0.22); }
+  .mc-status.done { background: rgba(67,160,71,0.25); }
   .mc-status.failed { background: color-mix(in srgb, var(--error-color, #db4437) 40%, transparent); }
   .mc-end .mc-title { font-size: 1.15em; font-weight: 700; }
 </style>`;
@@ -437,7 +457,7 @@ class MangaCard extends HTMLElement {
       <div class="mc-header" id="mc-title"></div>
       <div id="mc-error"></div>
       <div class="mc-tabs" id="mc-tabs" hidden></div>
-      <form class="mc-searchbar" id="mc-searchbar" data-submit="search"><input type="search" id="mc-search" placeholder="Serie suchen" autocomplete="off" enterkeyhint="search" data-input="filter"><button type="submit" class="mc-btn" id="mc-find" hidden>Suchen</button></form>
+      <form class="mc-searchbar" id="mc-searchbar" data-submit="search"><input type="search" id="mc-search" placeholder="Serie suchen" autocomplete="off" enterkeyhint="search" data-input="filter"><button type="submit" class="mc-btn round" id="mc-find" aria-label="Suchen" hidden><ha-icon icon="mdi:magnify"></ha-icon></button></form>
       <div class="mc-body" id="mc-body"></div>
     </div></ha-card>`;
 
@@ -446,7 +466,7 @@ class MangaCard extends HTMLElement {
     this._overlay = document.createElement("div");
     this._overlay.className = "manga-card-overlay";
     this._overlayRoot = this._overlay.attachShadow({ mode: "open" });
-    this._overlayRoot.innerHTML = `${STYLE}<dialog class="mc-dialog" id="mc-detail"></dialog><dialog class="mc-dialog" id="mc-reader"></dialog>`;
+    this._overlayRoot.innerHTML = `${STYLE}<dialog class="mc-dialog" id="mc-detail"></dialog><dialog class="mc-dialog mc-full" id="mc-reader"></dialog>`;
     document.body.appendChild(this._overlay);
     this._detailDialog = this._overlayRoot.getElementById("mc-detail");
     this._readerDialog = this._overlayRoot.getElementById("mc-reader");
@@ -752,8 +772,8 @@ class MangaCard extends HTMLElement {
     if (input) input.placeholder = this._tab === "search" ? "Titel suchen, z. B. Attack on Titan" : "Serie suchen";
     if (!this._mylar) return;
     const active = this._activeDownloads();
-    const html = [["library", "Bibliothek"], ["search", "Suchen"], ["downloads", "Downloads"]]
-      .map(([id, label]) => `<button class="mc-tab ${this._tab === id ? "active" : ""}" data-action="tab" data-tab="${id}">${label}${
+    const html = [["library", "Bibliothek", "mdi:bookshelf"], ["search", "Suchen", "mdi:magnify"], ["downloads", "Downloads", "mdi:download"]]
+      .map(([id, label, icon]) => `<button class="mc-tab ${this._tab === id ? "active" : ""}" data-action="tab" data-tab="${id}"><ha-icon icon="${icon}"></ha-icon>${label}${
         id === "downloads" && active ? `<span class="mc-badge">${active}</span>` : ""}</button>`)
       .join("");
     if (el._html !== html) {
