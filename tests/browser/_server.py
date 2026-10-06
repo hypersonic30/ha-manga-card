@@ -195,7 +195,7 @@ class H(http.server.SimpleHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path); cmd = url.path[len("/api/books/mylar/"):]
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         reads = {"findComic", "getIndex", "getComic", "getWanted", "getHistory"}
-        writes = {"addComic", "queueIssue", "unqueueIssue", "forceSearch", "pauseComic", "resumeComic"}
+        writes = {"addComic", "queueIssue", "unqueueIssue", "forceSearch", "pauseComic", "resumeComic", "delComic"}
         with State.lock:
             State.log.append({"method": method, "path": "mylar/" + cmd, "query": q, "body": None})
         time.sleep(State.mylar["delay"].get(cmd, 0) / 1000)       # a slow Mylar (it works through 60 s indexer pauses)
@@ -234,6 +234,12 @@ class H(http.server.SimpleHTTPRequestHandler):
                                        "publishYear": find["comicyear"], "year": find["comicyear"], "totalIssues": int(find["issues"])})
                     M["issues"][cid] = _mylar_issues(cid)
                 return self._send(200, {"success": True, "data": "Successfully queued up addding id: " + cid})
+            if cmd == "delComic":                                        # the series leaves Mylar's database; files on disk are not touched
+                cid = q["id"]
+                M["index"] = [x for x in M["index"] if x["id"] != cid]
+                M["issues"].pop(cid, None)
+                M["history"] = [h for h in M["history"] if h.get("ComicID") != cid]
+                return self._send(200, {"success": True, "data": "ok"})
             if cmd in ("queueIssue", "unqueueIssue"):
                 for lst in M["issues"].values():
                     for i in lst:

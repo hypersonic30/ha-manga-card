@@ -12,6 +12,8 @@ overwrites anybody else's progress. UI language: German.
 
 ## Features
 
+- **Downloads löschen** — a wanted volume in the Downloads tab has a trash button: "Nicht mehr suchen" takes it off Mylar's wanted list, or the whole series is removed from Mylar (its database; files already filed stay in Komga). Needs integration ≥ 0.21.0.
+
 - **Library** — all Komga libraries as chips, cover grid with unread badges, search (done by Komga), "Mehr laden" paging, and a
   **Weiterlesen** row with volumes in progress and the next unread volume of series you have started.
 - **Series** — cover, status, publisher, language, summary, all volumes with progress; one button for *Lesen / Weiterlesen / Nochmal lesen*;

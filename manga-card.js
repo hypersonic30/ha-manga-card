@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.3.3";
+const CARD_VERSION = "0.4.0";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -278,6 +278,9 @@ const STYLE = `
   .mc-res { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: var(--mc-radius-sm); background: var(--mc-soft); }
   .mc-res .mc-cover { flex: 0 0 52px; box-shadow: none; }
   .mc-res .mc-btn { min-height: 38px; padding: 0 14px; font-size: 0.85em; white-space: nowrap; }
+  .mc-confirm { margin-top: 8px; padding: 10px 12px; border-radius: var(--mc-radius-sm); background: var(--mc-soft); border: 1px solid rgba(127, 127, 127, 0.3); }
+  .mc-check { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; font-size: 0.9em; cursor: pointer; }
+  .mc-check input { margin-top: 2px; flex: 0 0 auto; }
   .mc-item { display: flex; flex-direction: column; }
   .mc-item .mc-res { cursor: default; }
   .mc-item .mc-res[data-action] { cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -337,6 +340,7 @@ class MangaCard extends HTMLElement {
     // Mylar (search / add / download) - only when the integration has a Mylar configured
     this._tab = "library"; // library | search | downloads
     this._mylar = false; // true once Mylar answered
+    this._removeAsk = null; // the trash button of a wanted volume was tapped: {issueId, comicId, title, vol, opts: {unqueue, series}}
     this._mylarIndex = []; // series Mylar follows
     this._findDraft = "";
     this._findQuery = "";
@@ -1039,12 +1043,12 @@ class MangaCard extends HTMLElement {
     }
     const wantedIds = new Set(this._dl.wanted.map((w) => String(w.IssueID)));
     for (const w of this._dl.wanted) {
-      rows.push({ state: "wanted", title: w.ComicName, vol: w.Issue_Number, at: w.DateAdded, provider: "" });
+      rows.push({ state: "wanted", title: w.ComicName, vol: w.Issue_Number, at: w.DateAdded, provider: "", issueId: String(w.IssueID), comicId: String(w.ComicID) });
     }
     for (const h of byIssue.values()) {
       if (wantedIds.has(String(h.IssueID))) continue;
       const state = h.Status === "Post-Processed" ? "done" : h.Status === "Snatched" ? "snatched" : "failed";
-      rows.push({ state, title: h.ComicName, vol: h.Issue_Number, at: h.DateAdded, provider: h.Provider || "", raw: h.Status });
+      rows.push({ state, title: h.ComicName, vol: h.Issue_Number, at: h.DateAdded, provider: h.Provider || "", raw: h.Status, issueId: String(h.IssueID), comicId: String(h.ComicID) });
     }
     const order = { wanted: 0, snatched: 1, failed: 2, done: 3 };
     return rows.sort((a, b) => order[a.state] - order[b.state] || String(b.at).localeCompare(String(a.at))).slice(0, 40);
@@ -1064,13 +1068,81 @@ class MangaCard extends HTMLElement {
     const line = (r) => {
       const stuck = r.state === "snatched" && Date.now() - new Date(String(r.at).replace(" ", "T")).getTime() > 15 * 60 * 1000;
       const sub = [r.provider, r.at, stuck ? "wartet schon länger – schau in Mylar nach" : ""].filter(Boolean).join(" · ");
+      const removable = (r.state === "wanted" || r.state === "failed") && r.comicId;
       return `<div class="mc-res"><div class="mc-vol-main"><div class="mc-vol-title">${esc(r.title)} · Band ${esc(r.vol)}</div>
-        <div class="mc-vol-sub">${esc(sub)}</div></div><span class="mc-status ${r.state}">${label[r.state]}</span></div>`;
+        <div class="mc-vol-sub">${esc(sub)}</div>${this._renderRemoveAsk(r)}</div><span class="mc-status ${r.state}">${label[r.state]}</span>
+        ${removable ? `<button class="mc-btn secondary" data-action="askRemove" data-issue="${esc(r.issueId)}" data-comic="${esc(r.comicId)}" data-title="${esc(r.title)}" data-vol="${esc(r.vol)}" data-state="${r.state}" aria-label="Entfernen">🗑</button>` : ""}</div>`;
     };
     const active = rows.filter((r) => r.state === "wanted" || r.state === "snatched");
     const past = rows.filter((r) => r.state === "done" || r.state === "failed");
     return `${actions}${active.length ? `<div class="mc-section">Aktiv</div><div class="mc-list">${active.map(line).join("")}</div>` : ""}${
       past.length ? `<div class="mc-section">Zuletzt</div><div class="mc-list">${past.map(line).join("")}</div>` : ""}`;
+  }
+
+  // The trash button: asks first. "Nicht mehr suchen" only takes the volume off Mylar's wanted list; the second box removes the whole series from
+  // Mylar (its database - files that were already filed stay where they are, so Komga keeps them).
+  _renderRemoveAsk(r) {
+    const ask = this._removeAsk;
+    if (!ask || ask.issueId !== r.issueId) return "";
+    const box = (opt, text) => `<label class="mc-check"><input type="checkbox" data-change="rmOpt" data-opt="${opt}" ${ask.opts[opt] ? "checked" : ""}><span>${text}</span></label>`;
+    return `<div class="mc-confirm">
+      <div><b>${esc(ask.title)} · Band ${esc(ask.vol)}</b> entfernen?</div>
+      ${ask.state === "wanted" ? box("unqueue", "Nicht mehr suchen (der Band bleibt in Mylar, wird aber nicht mehr geladen)") : ""}
+      ${box("series", `Die ganze Serie „${esc(ask.title)}“ aus Mylar entfernen (schon abgelegte Dateien bleiben in Komga)`)}
+      <div class="mc-actions-row"><button class="mc-btn" data-action="doRemove" ${this._pending.has(`rm-${ask.issueId}`) ? "disabled" : ""}>Entfernen</button>
+        <button class="mc-btn secondary" data-action="cancelRemove">Abbrechen</button></div>
+    </div>`;
+  }
+
+  _onAction_askRemove(el) {
+    const d = el.dataset;
+    this._removeAsk = { issueId: d.issue, comicId: d.comic, title: d.title, vol: d.vol, state: d.state, opts: { unqueue: d.state === "wanted", series: d.state !== "wanted" } };
+    this._render();
+  }
+
+  _onAction_cancelRemove() {
+    this._removeAsk = null;
+    this._render();
+  }
+
+  _onChange_rmOpt(el) {
+    if (this._removeAsk) this._removeAsk.opts[el.dataset.opt] = el.checked;
+  }
+
+  async _onAction_doRemove() {
+    const ask = this._removeAsk;
+    if (!ask) return;
+    const key = `rm-${ask.issueId}`;
+    if (this._pending.has(key)) return;
+    if (!ask.opts.series && !ask.opts.unqueue) {
+      this._setNotice("Nichts ausgewählt.");
+      return;
+    }
+    this._pending.add(key);
+    this._render();
+    try {
+      if (ask.opts.series) {
+        await this._my("POST", "delComic", { id: ask.comicId });
+        this._dl.wanted = this._dl.wanted.filter((w) => String(w.ComicID) !== ask.comicId);
+        this._dl.history = this._dl.history.filter((h) => String(h.ComicID) !== ask.comicId);
+        this._mylarIndex = this._mylarIndex.filter((s) => String(s.id) !== ask.comicId);
+        this._seriesCache.delete(ask.comicId);
+        if (this._open === ask.comicId) this._open = null;
+        this._setNotice("Serie aus Mylar entfernt. Schon abgelegte Dateien bleiben in Komga.");
+      } else {
+        await this._my("POST", "unqueueIssue", { id: ask.issueId });
+        this._dl.wanted = this._dl.wanted.filter((w) => String(w.IssueID) !== ask.issueId);
+        this._seriesCache.delete(ask.comicId);
+        this._setNotice("Wird nicht mehr gesucht.");
+      }
+      this._removeAsk = null;
+    } catch (err) {
+      this._setError(err, "Entfernen");
+    } finally {
+      this._pending.delete(key);
+      this._render();
+    }
+    this._loadDownloads().catch(() => {});
   }
 
   _onAction_refreshDownloads() {
