@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.4.1";
 const CARD_TAG = "manga-card";
 const EDITOR_TAG = "manga-card-editor";
 const KOMGA = "books/komga/"; // hass.callApi() path (the Books integration proxies Komga here)
@@ -76,6 +76,9 @@ function qs(params) {
 function errStatus(err) {
   return err?.status ?? err?.status_code; // the test stub throws {status}, Home Assistant {status_code}
 }
+
+const SCAN_FORBIDDEN_TEXT =
+  "Komga erlaubt das Scannen nur Administratoren, mit deinem Zugang geht das nicht. Komga prüft die Bibliothek selbst im eingestellten Intervall (bei der Bibliothek in Komga einstellbar), neue Bände erscheinen dann von allein.";
 
 const NO_PERSON_TEXT = "Für dein Konto ist keine Person angelegt. Bitte den Verwalter, dich in der Books-Integration hinzuzufügen (Einstellungen → Geräte & Dienste → Books → Person hinzufügen).";
 
@@ -340,6 +343,7 @@ class MangaCard extends HTMLElement {
     // Mylar (search / add / download) - only when the integration has a Mylar configured
     this._tab = "library"; // library | search | downloads
     this._mylar = false; // true once Mylar answered
+    this._scanForbidden = false; // Komga answered 403 to a scan once: only administrators may scan; the card stops trying and says so
     this._removeAsk = null; // the trash button of a wanted volume was tapped: {issueId, comicId, title, vol, opts: {unqueue, series}}
     this._mylarIndex = []; // series Mylar follows
     this._findDraft = "";
@@ -1061,9 +1065,10 @@ class MangaCard extends HTMLElement {
   _renderDownloads() {
     const actions = `<div class="mc-actions-row"><button class="mc-btn secondary" data-action="refreshDownloads">Aktualisieren</button>
       <button class="mc-btn secondary" data-action="scanKomga">Komga aktualisieren</button></div>`;
-    if (!this._dl.loaded) return `${actions}<div class="mc-loading">Lädt…</div>`;
+    const hint = this._scanForbidden ? `<div class="mc-hint">${esc(SCAN_FORBIDDEN_TEXT)}</div>` : "";
+    if (!this._dl.loaded) return `${actions}${hint}<div class="mc-loading">Lädt…</div>`;
     const rows = this._downloadRows();
-    if (!rows.length) return `${actions}<div class="mc-empty">Noch keine Downloads.<br>Im Tab „Suchen“ eine Serie hinzufügen und Bände laden.</div>`;
+    if (!rows.length) return `${actions}${hint}<div class="mc-empty">Noch keine Downloads.<br>Im Tab „Suchen“ eine Serie hinzufügen und Bände laden.</div>`;
     const label = { wanted: "Wird gesucht", snatched: "Lädt…", done: "Fertig", failed: "Fehlgeschlagen" };
     const line = (r) => {
       const stuck = r.state === "snatched" && Date.now() - new Date(String(r.at).replace(" ", "T")).getTime() > 15 * 60 * 1000;
@@ -1075,7 +1080,7 @@ class MangaCard extends HTMLElement {
     };
     const active = rows.filter((r) => r.state === "wanted" || r.state === "snatched");
     const past = rows.filter((r) => r.state === "done" || r.state === "failed");
-    return `${actions}${active.length ? `<div class="mc-section">Aktiv</div><div class="mc-list">${active.map(line).join("")}</div>` : ""}${
+    return `${actions}${hint}${active.length ? `<div class="mc-section">Aktiv</div><div class="mc-list">${active.map(line).join("")}</div>` : ""}${
       past.length ? `<div class="mc-section">Zuletzt</div><div class="mc-list">${past.map(line).join("")}</div>` : ""}`;
   }
 
@@ -1151,8 +1156,8 @@ class MangaCard extends HTMLElement {
 
   async _onAction_scanKomga() {
     try {
-      await this._scanKomga();
-      this._setNotice("Komga scannt die Bibliothek. Neue Bände erscheinen gleich im Tab „Bibliothek“.");
+      if (await this._scanKomga()) this._setNotice("Komga scannt die Bibliothek. Neue Bände erscheinen gleich im Tab „Bibliothek“.");
+      else this._setNotice(SCAN_FORBIDDEN_TEXT);
     } catch (err) {
       this._setError(err, "Komga");
     }
@@ -1171,12 +1176,23 @@ class MangaCard extends HTMLElement {
   /** Ask Komga to look at its libraries now (cheap: unchanged folders are skipped). */
   async _scanKomga() {
     const libs = this._libraries.length ? this._libraries : (await this._api("GET", "v1/libraries")) || [];
-    await Promise.all(libs.map((l) => this._api("POST", `v1/libraries/${l.id}/scan`)));
+    try {
+      await Promise.all(libs.map((l) => this._api("POST", `v1/libraries/${l.id}/scan`)));
+    } catch (err) {
+      // Komga's own 403 (no code in the body; our own refusals carry one): a normal user's key may not scan. Not an error of the card.
+      if (errStatus(err) === 403 && !err?.body?.code) {
+        this._scanForbidden = true;
+        this._render(); // shows the hint under the button
+        return false;
+      }
+      throw err;
+    }
     clearTimeout(this._rescanTimer);
     this._rescanTimer = setTimeout(() => {
       this._loadSeries(true).catch(() => {});
       this._loadContinue().catch(() => {});
     }, this._config.rescan_wait_ms ?? 6000);
+    return true;
   }
 
   /**
@@ -1199,7 +1215,8 @@ class MangaCard extends HTMLElement {
     if (!fresh.length) return;
     fresh.forEach((k) => this._ppSeen.add(k));
     store(SEEN_KEY, JSON.stringify([...this._ppSeen]));
-    await this._scanKomga();
+    if (this._scanForbidden) return; // already known: Komga scans by itself
+    if (!(await this._scanKomga())) this._setNotice(`Neuer Band fertig. ${SCAN_FORBIDDEN_TEXT}`);
   }
 
   // ── Polling (only while something on screen can change) ──────────────

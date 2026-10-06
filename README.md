@@ -12,6 +12,8 @@ overwrites anybody else's progress. UI language: German.
 
 ## Features
 
+- **Komga scannen:** only a Komga administrator may scan a library, and the integration refuses administrator keys on purpose. With a normal key the buttons "Komga aktualisieren" and the automatic scan after a finished download therefore get a 403 from Komga; the card says so in German (once) and stops trying. Switch on the **scan interval** of the library in Komga instead (library settings), new volumes then appear by themselves.
+
 - **Downloads löschen** — a wanted volume in the Downloads tab has a trash button: "Nicht mehr suchen" takes it off Mylar's wanted list, or the whole series is removed from Mylar (its database; files already filed stay in Komga). Needs integration ≥ 0.21.0.
 
 - **Library** — all Komga libraries as chips, cover grid with unread badges, search (done by Komga), "Mehr laden" paging, and a

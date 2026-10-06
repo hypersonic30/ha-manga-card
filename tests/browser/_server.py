@@ -74,6 +74,7 @@ class State:
     down = False
     no_person = False
     restricted = False
+    scan_forbidden = False
     mylar = _fresh_mylar()
 
 
@@ -84,6 +85,7 @@ def reset():
         State.down = False
         State.no_person = False
         State.restricted = False
+        State.scan_forbidden = False
         State.mylar = _fresh_mylar()
 
 
@@ -179,6 +181,8 @@ class H(http.server.SimpleHTTPRequestHandler):
                     State.books[m.group(1)]["readProgress"] = {"page": body["page"], "completed": body["completed"]}
                     return self._send(204)
             if method == "POST" and re.fullmatch(r"v1/libraries/\w+/scan", path):
+                if State.scan_forbidden:                                  # Komga: only administrators may scan, a normal user's key gets 403
+                    return self._send(403, {"timestamp": "2026-10-06T07:17:01", "status": 403, "error": "Forbidden", "message": "Forbidden", "path": path})
                 return self._send(202)
             if method in ("POST", "DELETE"):
                 m = re.fullmatch(r"v1/series/(\w+)/read-progress", path)
@@ -276,6 +280,8 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/__reset"):
             reset(); return self._send(200, {"ok": True})
+        if self.path.startswith("/__scanforbidden/"):
+            State.scan_forbidden = self.path.endswith("/1"); return self._send(200, {"ok": True})
         if self.path.startswith("/__restricted/"):
             State.restricted = self.path.endswith("/1"); return self._send(200, {"ok": True})
         if self.path.startswith("/__noperson/"):
